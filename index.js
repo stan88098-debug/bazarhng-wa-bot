@@ -14,32 +14,30 @@ const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const BOT_SECRET = process.env.WHATSAPP_BOT_SECRET || 'bazarhng_sec_99f4a8b2c1e7';
 const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://bazarhng.netlify.app';
-
-// ⚠️ SET YOUR BOT PHONE NUMBER HERE (International format without '+' sign, e.g., 2348012345678)
-const BOT_PHONE_NUMBER = process.env.BOT_PHONE_NUMBER || '234XXXXXXXXXX'; 
+const BOT_PHONE_NUMBER = '2347066568228';
 
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info');
   
   const sock = makeWASocket({ 
     auth: state,
-    printQRInTerminal: false
+    printQRInTerminal: false,
+    browser: ["Ubuntu", "Chrome", "20.0.04"]
   });
 
   sock.ev.on('creds.update', saveCreds);
 
-  // Trigger Pairing Code if not already authenticated
   if (!sock.authState.creds.registered) {
     setTimeout(async () => {
       try {
         const code = await sock.requestPairingCode(BOT_PHONE_NUMBER);
         console.log('\n========================================');
-        console.log(`🔑 YOUR WHATSAPP PAIRING CODE: ${code}`);
+        console.log(`🔑 YOUR PAIRING CODE: ${code}`);
         console.log('========================================\n');
       } catch (err) {
-        console.error('Failed to get pairing code:', err);
+        console.error('Pairing Code Request Failed:', err);
       }
-    }, 3000);
+    }, 2000);
   }
 
   sock.ev.on('connection.update', (update) => {
