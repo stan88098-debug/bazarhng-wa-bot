@@ -1,17 +1,16 @@
 {
   "name": "bazarhng-wa-bot",
   "version": "1.0.0",
+  "type": "module",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.24",
-    "axios": "^1.7.0",
-    "groq-sdk": "^1.6.0",
+    "@whiskeysockets/baileys": "^6.7.9",
+    "groq-sdk": "^0.9.0",
     "node-fetch": "^3.3.2",
-    "pg": "^8.23.1",
-    "pino": "^9.0.0",
+    "pg": "^8.13.1",
     "qrcode-terminal": "^0.12.0"
   }
 }

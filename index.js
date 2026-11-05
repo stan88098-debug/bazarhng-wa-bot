@@ -1,17 +1,16 @@
-import makeWASocket, { useMultiFileAuthState } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from '@whiskeysockets/baileys';
+import qrcode from 'qrcode-terminal';
 import pkg from 'pg';
 import Groq from 'groq-sdk';
 import fetch from 'node-fetch';
 
 const { Pool } = pkg;
 
-// Neon PostgreSQL connection pool
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false }
 });
 
-// Groq AI client
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 const BOT_SECRET = process.env.WHATSAPP_BOT_SECRET || 'bazarhng_sec_99f4a8b2c1e7';
@@ -20,11 +19,25 @@ const APP_URL = process.env.NEXT_PUBLIC_APP_URL || 'https://bazarhng.netlify.app
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState('auth_info');
   const sock = makeWASocket({ 
-    auth: state, 
-    printQRInTerminal: true 
+    auth: state
   });
 
   sock.ev.on('creds.update', saveCreds);
+
+  sock.ev.on('connection.update', (update) => {
+    const { connection, lastDisconnect, qr } = update;
+    if (qr) {
+      console.log('\n--- SCAN THIS QR CODE WITH WHATSAPP ---');
+      qrcode.generate(qr, { small: true });
+    }
+    if (connection === 'close') {
+      const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
+      console.log('Connection closed. Reconnecting...', shouldReconnect);
+      if (shouldReconnect) startBot();
+    } else if (connection === 'open') {
+      console.log('✅ WhatsApp Bot Connected Successfully!');
+    }
+  });
 
   sock.ev.on('messages.upsert', async ({ messages }) => {
     const m = messages[0];
@@ -37,7 +50,6 @@ async function startBot() {
     if (!messageText) return;
 
     try {
-      // 1. Verify if WhatsApp number belongs to a registered vendor in DB
       const client = await pool.connect();
       const storeQuery = await client.query(
         'SELECT id, business_name, owner_name, slug, whatsapp_number FROM businesses WHERE whatsapp_number LIKE $1 LIMIT 1',
@@ -57,7 +69,6 @@ async function startBot() {
       const storeSlug = store.slug;
       const businessId = store.id;
 
-      // 2. Greet vendor by name and process product text via Groq AI
       await sock.sendMessage(senderJid, { 
         text: `Hey ${ownerName}! 👋 Reading your product details with Groq AI 🤖...` 
       });
@@ -76,7 +87,6 @@ async function startBot() {
 
       const productData = JSON.parse(completion.choices[0].message.content);
 
-      // 3. Post parsed product payload to Next.js API route on Netlify
       const ingestEndpoint = `${APP_URL}/api/whatsapp/ingest`;
       const apiResponse = await fetch(ingestEndpoint, {
         method: 'POST',
