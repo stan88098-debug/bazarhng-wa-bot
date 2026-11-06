@@ -3,41 +3,49 @@ import Groq from "groq-sdk";
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
 export async function processUserMessage(incomingText, hasImage, storeContext = null) {
-  let storeInfoPrompt = "The vendor's store details are currently unlinked or not found in the database.";
+  let storeInfoPrompt = "Store Identity: Unlinked vendor. (Prompt vendor to connect their shop on BazarhNG if they ask about their store name).";
   
   if (storeContext && storeContext.store) {
     const { store, products } = storeContext;
-    const productList = products.map(p => `- ${p.title}: ₦${p.price} (Stock: ${p.stock})`).join("\n");
-    
+    const productList = products.length > 0
+      ? products.map(p => `- ${p.title}: ₦${Number(p.price).toLocaleString()} (Stock: ${p.stock}, ${p.is_published ? 'Live' : 'Draft'})`).join("\n")
+      : "No products currently listed.";
+
     storeInfoPrompt = `
-You are the personal AI assistant for the store "${store.name}".
-STORE DETAILS:
+STORE CONTEXT (LIVE DATABASE DATA):
 - Store Name: ${store.name}
-- Store Slug: ${store.slug}
-- Current Products in Database (${products.length}):
-${productList || "No products currently listed."}
+- Store Web Address: bazarhng.netlify.app/store/${store.slug}
+- Registered Phone: ${store.phone}
+- Current Catalog (${products.length} items):
+${productList}
 `;
   }
 
   const systemPrompt = `
-You are the official AI store assistant for BazarhNG vendors on WhatsApp.
+You are the official AI Store Assistant for BazarhNG micro-vendors in Nigeria on WhatsApp.
+You speak warm, clear, professional English with a natural tone suitable for Nigerian business owners.
+
 ${storeInfoPrompt}
 
-YOUR TASKS:
-1. If the user message or image caption is listing a product/item with a price (e.g., "Lg tv \\n 3000", "Big fridge for 5000"):
-   - Set "intent": "ADD_PRODUCT".
-   - Extract title, price (as a pure number), description (if any), and stock (default to 1).
+INTENT RECOGNITION RULES:
+1. "ADD_PRODUCT": Triggered when the user uploads a photo/text listing an item with a price.
+   - Price parsing rules: 
+     * Convert "15k" or "15K" -> 15000
+     * Convert "3.5m" or "3.5M" -> 3500000
+     * Strip out currency signs (e.g., "₦5000" -> 5000, "5,000" -> 5000).
+   - Extract title, numeric price, optional description, and stock (default: 1).
 
-2. If the user asks questions about their store, inventory, store name, or general greetings:
-   - Set "intent": "CHAT".
-   - Use the STORE DETAILS provided above to give exact, accurate answers about their store name and catalog.
+2. "CHAT": Triggered for greetings, questions about their store, inventory checks, price lookups, or how to use the bot.
+   - Use the STORE CONTEXT to answer questions accurately (e.g. if asked "What's my store name?", answer with their actual store name).
+   - If asked how to add items, explain: "Send a product picture with the title and price in the caption!"
 
-Return ONLY a valid JSON object strictly matching this schema:
+RETURN ONLY VALID JSON. No extra preamble or markdown backticks outside JSON.
+JSON SCHEMA:
 {
   "intent": "ADD_PRODUCT" | "CHAT",
   "product": {
     "title": "string or null",
-    "price": "number or null",
+    "price": number or null,
     "description": "string or null",
     "stock": 1
   },
@@ -49,7 +57,7 @@ Return ONLY a valid JSON object strictly matching this schema:
     const completion = await groq.chat.completions.create({
       messages: [
         { role: "system", content: systemPrompt },
-        { role: "user", content: incomingText || (hasImage ? "Uploaded item photo" : "Hello") },
+        { role: "user", content: incomingText || (hasImage ? "Uploaded item photo with caption" : "Hello") },
       ],
       model: "openai/gpt-oss-120b",
       temperature: 0.2,
@@ -59,10 +67,10 @@ Return ONLY a valid JSON object strictly matching this schema:
     const parsed = JSON.parse(completion.choices[0]?.message?.content || "{}");
     return parsed;
   } catch (err) {
-    console.error("Groq Processing Error:", err);
+    console.error("Groq Brain Error:", err);
     return {
       intent: "CHAT",
-      reply: "I couldn't quite process that. Send your product image with the name and price in the caption!",
+      reply: "I couldn't quite catch that. Try sending your product photo with the item name and price in the caption!",
     };
   }
 }

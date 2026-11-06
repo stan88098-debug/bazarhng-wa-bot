@@ -2,18 +2,20 @@ import { neon } from "@neondatabase/serverless";
 
 export async function getStoreContextByPhone(phoneNumber) {
   try {
-    if (!process.env.DATABASE_URL) {
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) {
       console.log("⚠️ DATABASE_URL not set in environment.");
       return null;
     }
     
-    const sql = neon(process.env.DATABASE_URL);
+    const sql = neon(dbUrl);
     const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
+    const matchPattern = '%' + cleanPhone.slice(-10);
 
     const stores = await sql`
       SELECT id, name, slug, phone
       FROM stores 
-      WHERE phone LIKE ${'%' + cleanPhone.slice(-10)} 
+      WHERE phone LIKE ${matchPattern} 
       LIMIT 1
     `;
 
@@ -28,7 +30,7 @@ export async function getStoreContextByPhone(phoneNumber) {
       FROM products 
       WHERE store_id = ${store.id} 
       ORDER BY created_at DESC 
-      LIMIT 15
+      LIMIT 20
     `;
 
     return {
@@ -43,10 +45,19 @@ export async function getStoreContextByPhone(phoneNumber) {
 
 export async function insertProductDraft(storeId, productData) {
   try {
-    const sql = neon(process.env.DATABASE_URL);
+    const dbUrl = process.env.DATABASE_URL;
+    if (!dbUrl) return null;
+
+    const sql = neon(dbUrl);
     const result = await sql`
       INSERT INTO products (store_id, title, price, stock, is_published)
-      VALUES (${storeId}, ${productData.title}, ${productData.price}, ${productData.stock || 1}, false)
+      VALUES (
+        ${storeId}, 
+        ${productData.title}, 
+        ${productData.price}, 
+        ${productData.stock || 1}, 
+        false
+      )
       RETURNING id, title, price
     `;
     return result[0];
