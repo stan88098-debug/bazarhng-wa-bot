@@ -45,7 +45,6 @@ async function connectToWhatsApp() {
       const errorMessage = lastDisconnect?.error?.message;
       console.log(`Connection closed (Status: ${statusCode || 'unknown'}, Error: ${errorMessage || 'none'}). Reconnecting in 10s...`);
       
-      // Prevent rapid fire loops on conflict 440
       const delay = statusCode === 440 ? 15000 : 5000;
       setTimeout(connectToWhatsApp, delay);
     } 
@@ -59,14 +58,16 @@ async function connectToWhatsApp() {
 
   sock.ev.on("messages.upsert", async (m) => {
     try {
+      console.log("🔔 messages.upsert event triggered:", JSON.stringify(m, null, 2));
+      
       const msg = m.messages[0];
       if (!msg || msg.key.fromMe) return;
 
       const jid = msg.key.remoteJid;
-      if (!jid || !jid.endsWith("@s.whatsapp.net")) return;
+      if (!jid) return;
 
       const senderPhone = jid.split("@")[0];
-      console.log(`\n📥 Raw Message received from JID: ${jid}`);
+      console.log(`📥 Incoming message from JID: ${jid}, Phone: ${senderPhone}`);
 
       const rawText =
         msg.message?.imageMessage?.caption ||
@@ -75,9 +76,12 @@ async function connectToWhatsApp() {
         "";
 
       const hasImage = !!msg.message?.imageMessage;
-      console.log(`💬 Extracted Text: "${rawText}" | Has Image: ${hasImage}`);
+      console.log(`💬 Text: "${rawText}" | Has Image: ${hasImage}`);
 
-      if (!rawText && !hasImage) return;
+      if (!rawText && !hasImage) {
+        console.log("⚠️ Ignored: Message has no text or image content.");
+        return;
+      }
 
       const storeContext = await getStoreContextByPhone(senderPhone);
       const response = await processUserMessage(rawText, hasImage, storeContext);
