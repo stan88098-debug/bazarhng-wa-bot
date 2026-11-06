@@ -8,9 +8,10 @@
     "start": "node index.js"
   },
   "dependencies": {
-    "@whiskeysockets/baileys": "^6.7.13",
     "@neondatabase/serverless": "^0.9.4",
+    "@whiskeysockets/baileys": "^6.7.13",
     "groq-sdk": "^0.7.0",
-    "pino": "^9.2.0"
+    "pino": "^9.2.0",
+    "postgres": "^4.1.0"
   }
 }
