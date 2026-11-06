@@ -4,13 +4,16 @@ import { getStoreContextByPhone, insertProductDraft } from "./src/db.js";
 import http from "http";
 import pino from "pino";
 
-const PORT = process.env.PORT || 3000;
+// 1. Keep-Alive Server for Render Health Check
+const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
-  res.end("BazarhNG WhatsApp Bot is Active & Running!\n");
+  res.end("BazarhNG Bot Service Active\n");
 }).listen(PORT, () => {
   console.log(`🚀 Render HTTP Health Check server listening on port ${PORT}`);
 });
+
+let isPairingRequested = false;
 
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -20,47 +23,54 @@ async function connectToWhatsApp() {
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
     connectTimeoutMs: 60000,
-    keepAliveIntervalMs: 30000,
-    browser: ["BazarhNG Bot", "Chrome", "10.0"],
+    defaultQueryTimeoutMs: 0,
+    keepAliveIntervalMs: 25000,
+    browser: ["Ubuntu", "Chrome", "20.0.04"],
   });
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
-    
+    const { connection, lastDisconnect, qr } = update;
+
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      console.log(`Connection closed due to: ${lastDisconnect?.error}, reconnecting status code: ${statusCode}`);
+      console.log(`Connection closed (Status: ${statusCode}). Reconnecting in 5s...`);
       
-      // If logged out (401), clear local auth so a fresh code can be requested safely
+      // Do not re-trigger pairing loop if logged out
       if (statusCode === DisconnectReason.loggedOut) {
-        console.log("⚠️ Device logged out. Clearing auth state for fresh pairing...");
-        // You may need to clear auth_info or restart
+        console.log("⚠️ Session logged out on device. Clear auth_info manually to re-pair.");
+        isPairingRequested = false;
       }
-      
       setTimeout(connectToWhatsApp, 5000);
-    } else if (connection === "open") {
+    } 
+    else if (connection === "open") {
       console.log("\n==================================================");
       console.log("✅ WHATSAPP BOT CONNECTED & ONLINE SUCCESSFULLY!");
       console.log("==================================================\n");
+      isPairingRequested = false;
     }
   });
 
-  if (!sock.authState.creds.registered) {
+  // Pairing code block: trigger once after connection handshake opens
+  if (!sock.authState.creds.registered && !isPairingRequested) {
+    isPairingRequested = true;
     const phoneNumber = process.env.PHONE_NUMBER;
+    
     if (phoneNumber) {
       setTimeout(async () => {
         try {
           const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
+          console.log(`Fetching fresh pairing code for ${cleanPhone}...`);
           const code = await sock.requestPairingCode(cleanPhone);
           console.log(`\n========================================`);
           console.log(`👉 PAIRING CODE FOR WHATSAPP: ${code} 👈`);
           console.log(`========================================\n`);
         } catch (err) {
-          console.error("Error generating pairing code:", err.message);
+          console.error("Pairing code error:", err.message);
+          isPairingRequested = false;
         }
-      }, 6000);
+      }, 10000); // 10s delay to ensure WS stream is ready
     }
   }
 
@@ -88,7 +98,6 @@ async function connectToWhatsApp() {
 
       const storeContext = await getStoreContextByPhone(senderPhone);
       const response = await processUserMessage(rawText, hasImage, storeContext);
-      console.log(`💡 Intent identified: ${response.intent}`);
 
       if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
         let dbSaved = false;
@@ -111,7 +120,7 @@ async function connectToWhatsApp() {
 
       console.log("📤 Response sent back to WhatsApp.");
     } catch (err) {
-      console.error("❌ Critical Processing Error:", err);
+      console.error("❌ Message Processing Error:", err);
     }
   });
 }
