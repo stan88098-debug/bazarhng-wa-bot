@@ -52,7 +52,7 @@ async function connectToWhatsApp() {
     }
   });
 
-  // Wait 15 seconds to let the socket fully handshake before requesting pairing code
+  // Wait 15 seconds for the WebSocket stream to fully settle before requesting the code
   if (!isPairingRequested) {
     isPairingRequested = true;
     const phoneNumber = process.env.PHONE_NUMBER;
