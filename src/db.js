@@ -2,7 +2,7 @@ import { neon } from "@neondatabase/serverless";
 
 export async function getStoreContextByPhone(phoneNumber) {
   try {
-    if (!process.environ?.DATABASE_URL && !process.env.DATABASE_URL) {
+    if (!process.env.DATABASE_URL) {
       console.log("⚠️ DATABASE_URL not set in environment.");
       return null;
     }
@@ -36,7 +36,7 @@ export async function getStoreContextByPhone(phoneNumber) {
       products: products || [],
     };
   } catch (err) {
-    console.error("Database Lookup Error (Safe Mode):", err.message);
+    console.error("Database Lookup Error:", err.message);
     return null;
   }
 }
@@ -51,7 +51,7 @@ export async function insertProductDraft(storeId, productData) {
     `;
     return result[0];
   } catch (err) {
-    console.error("Database Insert Error (Safe Mode):", err.message);
+    console.error("Database Insert Error:", err.message);
     return null;
   }
 }
