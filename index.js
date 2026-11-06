@@ -31,7 +31,7 @@ async function connectToWhatsApp() {
     connectTimeoutMs: 60000,
     defaultQueryTimeoutMs: 0,
     keepAliveIntervalMs: 25000,
-    browser: ["Ubuntu", "Chrome", "20.0.04"],
+    browser: ["Chrome", "Macintosh", "120.0.0.0"],
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -52,7 +52,6 @@ async function connectToWhatsApp() {
     }
   });
 
-  // Wait 15 seconds for the WebSocket stream to fully settle before requesting the code
   if (!isPairingRequested) {
     isPairingRequested = true;
     const phoneNumber = process.env.PHONE_NUMBER;
@@ -61,7 +60,7 @@ async function connectToWhatsApp() {
       setTimeout(async () => {
         try {
           const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
-          console.log(`Requesting stable pairing code for ${cleanPhone}...`);
+          console.log(`Requesting pairing code for ${cleanPhone}...`);
           const code = await sock.requestPairingCode(cleanPhone);
           console.log(`\n========================================`);
           console.log(`👉 PAIRING CODE FOR WHATSAPP: ${code} 👈`);
