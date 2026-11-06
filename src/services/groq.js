@@ -36,7 +36,7 @@ Return ONLY a valid JSON object strictly matching this schema:
         { role: "system", content: systemPrompt },
         { role: "user", content: incomingText || (hasImage ? "Uploaded item photo" : "Hello") },
       ],
-      model: "llama-3.3-70b-versatile",
+      model: "openai/gpt-oss-120b",
       temperature: 0.2,
       response_format: { type: "json_object" },
     });
