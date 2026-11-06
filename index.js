@@ -32,7 +32,6 @@ async function connectToWhatsApp() {
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect, qr } = update;
 
-    // Trigger pairing code safely when Baileys initializes the pairing challenge state
     if (qr && !sock.authState.creds.registered && !isPairingRequested) {
       isPairingRequested = true;
       const phoneNumber = process.env.PHONE_NUMBER;
@@ -50,7 +49,7 @@ async function connectToWhatsApp() {
             console.error("Pairing code error:", err.message);
             isPairingRequested = false;
           }
-        }, 4000);
+        }, 5000);
       }
     }
 
