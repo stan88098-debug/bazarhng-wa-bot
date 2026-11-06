@@ -4,7 +4,6 @@ import { getStoreContextByPhone, insertProductDraft } from "./src/db.js";
 import http from "http";
 import pino from "pino";
 
-// 1. HTTP Server for Render Health Checks
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
   res.writeHead(200, { "Content-Type": "text/plain" });
@@ -13,7 +12,6 @@ http.createServer((req, res) => {
   console.log(`🚀 Render HTTP Health Check server listening on port ${PORT}`);
 });
 
-// 2. Main WhatsApp Engine
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
@@ -23,19 +21,25 @@ async function connectToWhatsApp() {
     printQRInTerminal: false,
     connectTimeoutMs: 60000,
     keepAliveIntervalMs: 30000,
+    browser: ["BazarhNG Bot", "Chrome", "10.0"],
   });
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect } = update;
+    
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      const shouldReconnect = statusCode !== DisconnectReason.loggedOut;
-      console.log(`Connection closed (Status Code: ${statusCode}), reconnecting: ${shouldReconnect}`);
-      if (shouldReconnect) {
-        setTimeout(connectToWhatsApp, 5000);
+      console.log(`Connection closed due to: ${lastDisconnect?.error}, reconnecting status code: ${statusCode}`);
+      
+      // If logged out (401), clear local auth so a fresh code can be requested safely
+      if (statusCode === DisconnectReason.loggedOut) {
+        console.log("⚠️ Device logged out. Clearing auth state for fresh pairing...");
+        // You may need to clear auth_info or restart
       }
+      
+      setTimeout(connectToWhatsApp, 5000);
     } else if (connection === "open") {
       console.log("\n==================================================");
       console.log("✅ WHATSAPP BOT CONNECTED & ONLINE SUCCESSFULLY!");
@@ -43,7 +47,6 @@ async function connectToWhatsApp() {
     }
   });
 
-  // Pairing Code Request Handler
   if (!sock.authState.creds.registered) {
     const phoneNumber = process.env.PHONE_NUMBER;
     if (phoneNumber) {
@@ -58,12 +61,9 @@ async function connectToWhatsApp() {
           console.error("Error generating pairing code:", err.message);
         }
       }, 6000);
-    } else {
-      console.log("⚠️ PHONE_NUMBER env variable missing. Cannot request pairing code.");
     }
   }
 
-  // Incoming Message Handler
   sock.ev.on("messages.upsert", async (m) => {
     try {
       const msg = m.messages[0];
@@ -86,14 +86,10 @@ async function connectToWhatsApp() {
 
       if (!rawText && !hasImage) return;
 
-      // 1. Database Context Lookup
       const storeContext = await getStoreContextByPhone(senderPhone);
-
-      // 2. Groq Intelligence Processing
       const response = await processUserMessage(rawText, hasImage, storeContext);
       console.log(`💡 Intent identified: ${response.intent}`);
 
-      // 3. Action Dispatching
       if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
         let dbSaved = false;
         if (storeContext && storeContext.store) {
