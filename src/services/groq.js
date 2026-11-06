@@ -2,74 +2,69 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-export async function processUserMessage(incomingText, hasImage, storeContext = null) {
-  let storeInfoPrompt = "Store Identity: Unlinked vendor. (Prompt vendor to connect their shop on BazarhNG if they ask about their store name).";
-  
-  if (storeContext && storeContext.store) {
-    const { store, products } = storeContext;
-    const productList = products.length > 0
-      ? products.map(p => `- ${p.title}: ₦${Number(p.price).toLocaleString()} (Stock: ${p.stock}, ${p.is_published ? 'Live' : 'Draft'})`).join("\n")
-      : "No products currently listed.";
+export async function processUserMessage(text, hasImage, storeContext) {
+  try {
+    const prompt = `You are an AI assistant for BazarhNG, a multi-vendor marketplace in Nigeria. 
+A vendor sent a message: "${text}" (Has image: ${hasImage}).
+Store Name: ${storeContext?.store?.name || 'Unknown'}
 
-    storeInfoPrompt = `
-STORE CONTEXT (LIVE DATABASE DATA):
-- Store Name: ${store.name}
-- Store Web Address: bazarhng.netlify.app/store/${store.slug}
-- Registered Phone: ${store.phone}
-- Current Catalog (${products.length} items):
-${productList}
-`;
-  }
-
-  const systemPrompt = `
-You are the official AI Store Assistant for BazarhNG micro-vendors in Nigeria on WhatsApp.
-You speak warm, clear, professional English with a natural tone suitable for Nigerian business owners.
-
-${storeInfoPrompt}
-
-INTENT RECOGNITION RULES:
-1. "ADD_PRODUCT": Triggered when the user uploads a photo/text listing an item with a price.
-   - Price parsing rules: 
-     * Convert "15k" or "15K" -> 15000
-     * Convert "3.5m" or "3.5M" -> 3500000
-     * Strip out currency signs (e.g., "₦5000" -> 5000, "5,000" -> 5000).
-   - Extract title, numeric price, optional description, and stock (default: 1).
-
-2. "CHAT": Triggered for greetings, questions about their store, inventory checks, price lookups, or how to use the bot.
-   - Use the STORE CONTEXT to answer questions accurately.
-   - If asked how to add items, explain: "Send a product picture with the title and price in the caption!"
-
-RETURN ONLY VALID JSON. No extra preamble or markdown backticks outside JSON.
-JSON SCHEMA:
+Analyze the message. If the user is trying to add a product, list an item, or providing an item name and price, respond in strict JSON format:
 {
-  "intent": "ADD_PRODUCT" | "CHAT",
+  "intent": "ADD_PRODUCT",
   "product": {
-    "title": "string or null",
-    "price": number or null,
-    "description": "string or null",
+    "title": "extracted product name",
+    "price": extracted_number_only,
     "stock": 1
   },
-  "reply": "string"
+  "reply": null
 }
-`;
 
-  try {
+If it's just a greeting or general question, respond in strict JSON format:
+{
+  "intent": "CHAT",
+  "product": null,
+  "reply": "Your helpful response here"
+}
+
+Return ONLY valid JSON. No markdown codeblocks, just raw JSON.`;
+
     const completion = await groq.chat.completions.create({
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: incomingText || (hasImage ? "Uploaded item photo with caption" : "Hello") },
-      ],
-      model: "openai/gpt-oss-120b",
-      temperature: 0.2,
-      response_format: { type: "json_object" },
+      model: "llama-3.1-8b-instant",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.1,
     });
 
-    return JSON.parse(completion.choices[0]?.message?.content || "{}");
+    const content = completion.choices[0]?.message?.content?.trim() || "";
+    const jsonStr = content.replace(/```json/g, "").replace(/```/g, "").trim();
+    const parsed = JSON.parse(jsonStr);
+    if (parsed && parsed.intent) return parsed;
+    throw new Error("Invalid JSON structure");
   } catch (err) {
-    console.error("Groq Brain Error:", err);
+    console.error("Groq parsing error or fallback triggered:", err.message);
+    
+    // Bulletproof regex fallback for captions like "Big fridge for 5000" or "Sneakers 25000"
+    const matchPrice = text.match(/(?:for|at|₦|price[:\s]*)?\s*([0-9][0-9,\s]*)/i);
+    if (matchPrice && text.length > 3) {
+      const priceVal = parseInt(matchPrice[1].replace(/[\s,]/g, ""), 10);
+      if (priceVal > 0) {
+        let titleVal = text.replace(matchPrice[0], "").replace(/for|at|price|₦/gi, "").trim();
+        if (!titleVal || titleVal.length < 2) titleVal = "Store Product";
+        return {
+          intent: "ADD_PRODUCT",
+          product: {
+            title: titleVal,
+            price: priceVal,
+            stock: 1
+          },
+          reply: null
+        };
+      }
+    }
+
     return {
       intent: "CHAT",
-      reply: "I couldn't quite catch that. Try sending your product photo with the item name and price in the caption!",
+      product: null,
+      reply: "Hello! 👋 Welcome to our store. Send a product picture with the title and price in the caption to add items to your shop!"
     };
   }
 }
