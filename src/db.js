@@ -1,23 +1,23 @@
-const postgres = require("postgres");
+import postgres from "postgres";
 
 if (!process.env.DATABASE_URL) {
   console.error("[db] DATABASE_URL is missing");
   process.exit(1);
 }
 
-const sql = postgres(process.env.DATABASE_URL, {
+export const sql = postgres(process.env.DATABASE_URL, {
   ssl: "require",
   max: 5,
   idle_timeout: 20,
   connect_timeout: 30,
 });
 
-function phoneSuffix(phone) {
+export function phoneSuffix(phone) {
   const digits = String(phone || "").replace(/\D/g, "");
   return digits.slice(-10);
 }
 
-async function ensureSchema() {
+export async function ensureSchema() {
   await sql`
     CREATE TABLE IF NOT EXISTS stores (
       id          SERIAL PRIMARY KEY,
@@ -52,7 +52,7 @@ async function ensureSchema() {
   console.log("[db] schema ready");
 }
 
-async function getStoreContextByPhone(phone) {
+export async function getStoreContextByPhone(phone) {
   const suffix = phoneSuffix(phone);
   let rows = [];
   if (suffix.length >= 10) {
@@ -87,7 +87,7 @@ async function getStoreContextByPhone(phone) {
   return { id: store.id, name: store.name, phone: store.phone };
 }
 
-async function insertProductDraft(storeId, product) {
+export async function insertProductDraft(storeId, product) {
   const title = String(product.title || "Untitled item").trim().slice(0, 200);
   const price = Number(product.price);
   const stock = Number.isFinite(Number(product.stock)) ? Math.max(0, Math.floor(Number(product.stock))) : 1;
@@ -108,11 +108,3 @@ async function insertProductDraft(storeId, product) {
 
   return row;
 }
-
-module.exports = {
-  sql,
-  ensureSchema,
-  getStoreContextByPhone,
-  insertProductDraft,
-  phoneSuffix,
-};

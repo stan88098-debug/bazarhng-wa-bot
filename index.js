@@ -1,22 +1,21 @@
-const http = require("http");
-const fs = require("fs");
-const path = require("path");
-const {
-  default: makeWASocket,
+import http from "http";
+import fs from "fs";
+import path from "path";
+import makeWASocket, {
   useMultiFileAuthState,
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
-} = require("@whiskeysockets/baileys");
-const pino = require("pino");
-const { Boom } = require("@hapi/boom");
+} from "@whiskeysockets/baileys";
+import pino from "pino";
+import { Boom } from "@hapi/boom";
 
-const {
+import {
   ensureSchema,
   getStoreContextByPhone,
   insertProductDraft,
-} = require("./src/db");
-const { processUserMessage } = require("./src/services/groq");
+} from "./src/db.js";
+import { processUserMessage } from "./src/services/groq.js";
 
 const AUTH_DIR = path.join(process.cwd(), "auth_info");
 const PORT = Number(process.env.PORT) || 10000;

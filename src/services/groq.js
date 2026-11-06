@@ -1,4 +1,4 @@
-const Groq = require("groq-sdk");
+import Groq from "groq-sdk";
 
 const MODEL = "llama-3.1-8b-instant";
 
@@ -27,7 +27,7 @@ function getClient() {
   return new Groq({ apiKey: process.env.GROQ_API_KEY });
 }
 
-function extractJsonObject(text) {
+export function extractJsonObject(text) {
   if (!text) return null;
   const trimmed = String(text).trim();
   const fence = trimmed.match(/```(?:json)?\s*([\s\S]*?)```/i);
@@ -42,7 +42,7 @@ function extractJsonObject(text) {
   }
 }
 
-function regexFallback(rawText) {
+export function regexFallback(rawText) {
   const text = String(rawText || "").replace(/\s+/g, " ").trim();
   if (!text) {
     return { intent: "CHAT", reply: "Send a product name and price, e.g. Big fridge for 5000" };
@@ -118,7 +118,7 @@ function normalizeResult(parsed, storeName) {
   return null;
 }
 
-async function processUserMessage(rawText, hasImage, storeContext) {
+export async function processUserMessage(rawText, hasImage, storeContext) {
   const text = String(rawText || "").trim();
   const storeName = storeContext?.name || null;
 
@@ -156,9 +156,3 @@ async function processUserMessage(rawText, hasImage, storeContext) {
   }
   return fallback;
 }
-
-module.exports = {
-  processUserMessage,
-  regexFallback,
-  extractJsonObject,
-};
