@@ -40,8 +40,8 @@ export async function ensureSchema() {
     )
   `;
 
-  const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM stores`;
-  if (count === 0) {
+  const existingStores = await sql`SELECT id, name FROM stores ORDER BY id ASC LIMIT 1`;
+  if (existingStores.length === 0) {
     await sql`
       INSERT INTO stores (name, phone)
       VALUES ('Default Shop', '2340000000000')
@@ -53,38 +53,45 @@ export async function ensureSchema() {
 }
 
 export async function getStoreContextByPhone(phone) {
-  const suffix = phoneSuffix(phone);
-  let rows = [];
-  if (suffix.length >= 10) {
-    rows = await sql`
-      SELECT id, name, phone
-      FROM stores
-      WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
-      ORDER BY id ASC
-      LIMIT 1
-    `;
-  }
+  try {
+    const suffix = phoneSuffix(phone);
+    let rows = [];
+    if (suffix.length >= 10) {
+      rows = await sql`
+        SELECT id, name, phone
+        FROM stores
+        WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
+        ORDER BY id ASC
+        LIMIT 1
+      `;
+    }
 
-  if (!rows.length) {
-    rows = await sql`
-      SELECT id, name, phone
-      FROM stores
-      ORDER BY id ASC
-      LIMIT 1
-    `;
-  }
+    if (!rows.length) {
+      rows = await sql`
+        SELECT id, name, phone
+        FROM stores
+        ORDER BY id ASC
+        LIMIT 1
+      `;
+    }
 
-  const store = rows[0];
-  if (!store) {
-    const [created] = await sql`
-      INSERT INTO stores (name, phone)
-      VALUES ('Default Shop', '2340000000000')
-      RETURNING id, name, phone
-    `;
-    return { id: created.id, name: created.name, phone: created.phone };
-  }
+    let store = rows[0];
+    if (!store) {
+      const [created] = await sql`
+        INSERT INTO stores (name, phone)
+        VALUES ('Default Shop', ${phone || '2340000000000'})
+        RETURNING id, name, phone
+      `;
+      store = created;
+    }
 
-  return { id: store.id, name: store.name, phone: store.phone };
+    return { id: store.id, name: store.name, phone: store.phone };
+  } catch (err) {
+    console.error("[db] getStoreContextByPhone error:", err.message);
+    // Absolute fallback so it never crashes
+    const [fallback] = await sql`SELECT id, name, phone FROM stores ORDER BY id ASC LIMIT 1`;
+    return fallback ? { id: fallback.id, name: fallback.name, phone: fallback.phone } : { id: 1, name: "Default Shop", phone: "" };
+  }
 }
 
 export async function insertProductDraft(storeId, product) {
