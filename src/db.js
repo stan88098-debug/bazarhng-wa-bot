@@ -1,17 +1,15 @@
 import { neon } from "@neondatabase/serverless";
 
-// Fallback to your Neon connection string if env var is missing
-const sql = neon(process.env.DATABASE_URL || "postgresql://neondb_owner:npg_ARpltcqv5Sn8@ep-patient-meadow-b4o33wug-pooler.c-6.us-east-2.aws.neon.tech/neondb?sslmode=require");
-
-/**
- * Fetch store and inventory context for a vendor by their phone number
- */
 export async function getStoreContextByPhone(phoneNumber) {
   try {
-    // Sanitize phone number (e.g. 2348012345678 -> find matching user or store)
+    if (!process.environ?.DATABASE_URL && !process.env.DATABASE_URL) {
+      console.log("⚠️ DATABASE_URL not set in environment.");
+      return null;
+    }
+    
+    const sql = neon(process.env.DATABASE_URL);
     const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
 
-    // Query user/store by phone
     const stores = await sql`
       SELECT id, name, slug, phone
       FROM stores 
@@ -25,7 +23,6 @@ export async function getStoreContextByPhone(phoneNumber) {
 
     const store = stores[0];
 
-    // Fetch store items to build AI context
     const products = await sql`
       SELECT title, price, stock, is_published 
       FROM products 
@@ -39,16 +36,14 @@ export async function getStoreContextByPhone(phoneNumber) {
       products: products || [],
     };
   } catch (err) {
-    console.error("Error fetching store context from Neon:", err);
+    console.error("Database Lookup Error (Safe Mode):", err.message);
     return null;
   }
 }
 
-/**
- * Insert new product draft directly into Neon
- */
 export async function insertProductDraft(storeId, productData) {
   try {
+    const sql = neon(process.env.DATABASE_URL);
     const result = await sql`
       INSERT INTO products (store_id, title, price, stock, is_published)
       VALUES (${storeId}, ${productData.title}, ${productData.price}, ${productData.stock || 1}, false)
@@ -56,7 +51,7 @@ export async function insertProductDraft(storeId, productData) {
     `;
     return result[0];
   } catch (err) {
-    console.error("Error inserting product into Neon:", err);
+    console.error("Database Insert Error (Safe Mode):", err.message);
     return null;
   }
 }
