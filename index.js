@@ -16,14 +16,10 @@ http.createServer((req, res) => {
 let isPairingRequested = false;
 
 async function connectToWhatsApp() {
-  // FORCE WIPE auth_info on startup to prevent stale pairing rejection
   if (fs.existsSync("auth_info")) {
     try {
       fs.rmSync("auth_info", { recursive: true, force: true });
-      console.log("🧹 Cleaned old auth_info directory for fresh pairing.");
-    } catch (e) {
-      console.error("Error clearing auth_info:", e);
-    }
+    } catch (e) {}
   }
 
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -56,7 +52,7 @@ async function connectToWhatsApp() {
     }
   });
 
-  // Request pairing code shortly after startup
+  // Wait 15 seconds to let the socket fully handshake before requesting pairing code
   if (!isPairingRequested) {
     isPairingRequested = true;
     const phoneNumber = process.env.PHONE_NUMBER;
@@ -65,7 +61,7 @@ async function connectToWhatsApp() {
       setTimeout(async () => {
         try {
           const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
-          console.log(`Fetching fresh pairing code for ${cleanPhone}...`);
+          console.log(`Requesting stable pairing code for ${cleanPhone}...`);
           const code = await sock.requestPairingCode(cleanPhone);
           console.log(`\n========================================`);
           console.log(`👉 PAIRING CODE FOR WHATSAPP: ${code} 👈`);
@@ -74,7 +70,7 @@ async function connectToWhatsApp() {
           console.error("Pairing code error:", err.message);
           isPairingRequested = false;
         }
-      }, 8000);
+      }, 15000);
     }
   }
 
