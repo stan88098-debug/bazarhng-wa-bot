@@ -1,8 +1,9 @@
-import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeysockets/baileys";
+import makeWASocket, { useMultiFileAuthState, DisconnectReason, Browsers } from "@whiskeysockets/baileys";
 import { processUserMessage } from "./src/services/groq.js";
 import { getStoreContextByPhone, insertProductDraft } from "./src/db.js";
 import http from "http";
 import pino from "pino";
+import fs from "fs";
 
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
@@ -21,48 +22,36 @@ async function connectToWhatsApp() {
     auth: state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
+    browser: Browsers.macOS("Chrome"),
+    syncFullHistory: false,
     connectTimeoutMs: 60000,
-    defaultQueryTimeoutMs: 0,
-    keepAliveIntervalMs: 25000,
-    browser: ["Chrome", "Macintosh", "120.0.0.0"],
+    defaultQueryTimeoutMs: 60000,
+    keepAliveIntervalMs: 30000,
+    retryRequestDelayMs: 2000,
   });
 
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect, qr } = update;
-
-    if (qr && !sock.authState.creds.registered && !isPairingRequested) {
-      isPairingRequested = true;
-      const phoneNumber = process.env.PHONE_NUMBER;
-      
-      if (phoneNumber) {
-        setTimeout(async () => {
-          try {
-            const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
-            console.log(`Requesting pairing code for ${cleanPhone}...`);
-            const code = await sock.requestPairingCode(cleanPhone);
-            console.log(`\n========================================`);
-            console.log(`👉 PAIRING CODE FOR WHATSAPP: ${code} 👈`);
-            console.log(`========================================\n`);
-          } catch (err) {
-            console.error("Pairing code error:", err.message);
-            isPairingRequested = false;
-          }
-        }, 5000);
-      }
-    }
+    const { connection, lastDisconnect } = update;
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      console.log(`Connection closed (Status: ${statusCode}). Reconnecting in 5s...`);
-      setTimeout(connectToWhatsApp, 5000);
+      const errorMessage = lastDisconnect?.error?.message;
+      console.log(`Connection closed (Status: ${statusCode || 'unknown'}, Error: ${errorMessage || 'none'}). Reconnecting in 5s...`);
+      
+      if (statusCode !== DisconnectReason.loggedOut) {
+        setTimeout(connectToWhatsApp, 5000);
+      } else {
+        console.log("Device logged out. Clearing auth_info...");
+        fs.rmSync("auth_info", { recursive: true, force: true });
+        setTimeout(connectToWhatsApp, 5000);
+      }
     } 
     else if (connection === "open") {
       console.log("\n==================================================");
       console.log("✅ WHATSAPP BOT CONNECTED & ONLINE SUCCESSFULLY!");
       console.log("==================================================\n");
-      isPairingRequested = false;
     }
   });
 
@@ -75,7 +64,7 @@ async function connectToWhatsApp() {
       if (!jid || !jid.endsWith("@s.whatsapp.net")) return;
 
       const senderPhone = jid.split("@")[0];
-      console.log(`\n📥 Message received from ${senderPhone}`);
+      console.log(`\n📥 Raw Message received from JID: ${jid}`);
 
       const rawText =
         msg.message?.imageMessage?.caption ||
@@ -84,10 +73,15 @@ async function connectToWhatsApp() {
         "";
 
       const hasImage = !!msg.message?.imageMessage;
+      console.log(`💬 Extracted Text: "${rawText}" | Has Image: ${hasImage}`);
+
       if (!rawText && !hasImage) return;
 
       const storeContext = await getStoreContextByPhone(senderPhone);
+      console.log(`🏪 Store Context Found for ${senderPhone}:`, storeContext ? storeContext.store.name : "None");
+
       const response = await processUserMessage(rawText, hasImage, storeContext);
+      console.log(`🤖 Groq Response Intent:`, response.intent, `| Reply:`, response.reply);
 
       if (response.intent === "ADD_PRODUCT" && response.product?.title && response.product?.price) {
         let dbSaved = false;
@@ -104,8 +98,9 @@ async function connectToWhatsApp() {
           `Log into your BazarhNG dashboard to publish it live!`;
 
         await sock.sendMessage(jid, { text: confirmText });
-      } else if (response.reply) {
-        await sock.sendMessage(jid, { text: response.reply });
+      } else {
+        const replyText = response.reply || "Hello! 👋 Welcome to our store. Send a product picture with the title and price in the caption to add items to your shop!";
+        await sock.sendMessage(jid, { text: replyText });
       }
     } catch (err) {
       console.error("❌ Message Processing Error:", err);
