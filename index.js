@@ -44,28 +44,33 @@ async function connectToWhatsApp() {
   }
 
   sock.ev.on("messages.upsert", async (m) => {
-    const msg = m.messages[0];
-    if (!msg || msg.key.fromMe) return;
-
-    const jid = msg.key.remoteJid;
-    if (!jid || !jid.endsWith("@s.whatsapp.net")) return;
-
-    const senderPhone = jid.split("@")[0];
-    console.log(`📥 Incoming message from ${senderPhone}`);
-
-    const rawText =
-      msg.message?.imageMessage?.caption ||
-      msg.message?.conversation ||
-      msg.message?.extendedTextMessage?.text ||
-      "";
-
-    const hasImage = !!msg.message?.imageMessage;
-
-    if (!rawText && !hasImage) return;
-
     try {
+      const msg = m.messages[0];
+      if (!msg || msg.key.fromMe) return;
+
+      const jid = msg.key.remoteJid;
+      if (!jid || !jid.endsWith("@s.whatsapp.net")) return;
+
+      const senderPhone = jid.split("@")[0];
+      console.log(`📥 Incoming message from ${senderPhone}`);
+
+      const rawText =
+        msg.message?.imageMessage?.caption ||
+        msg.message?.conversation ||
+        msg.message?.extendedTextMessage?.text ||
+        "";
+
+      const hasImage = !!msg.message?.imageMessage;
+      console.log(`📝 Text: "${rawText}" | Image: ${hasImage}`);
+
+      if (!rawText && !hasImage) return;
+
+      // Fetch store context safely
       const storeContext = await getStoreContextByPhone(senderPhone);
+      
+      // Process with Groq
       const response = await processUserMessage(rawText, hasImage, storeContext);
+      console.log("💡 Groq Intent:", response.intent);
 
       if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
         let dbSaved = false;
@@ -82,14 +87,12 @@ async function connectToWhatsApp() {
           `Check your BazarhNG dashboard to publish it live!`;
 
         await sock.sendMessage(jid, { text: confirmText });
-      } else if (response.reply) {
-        await sock.sendMessage(jid, { text: response.reply });
+      } else {
+        await sock.sendMessage(jid, { text: response.reply || "Hello! I am your BazarhNG assistant." });
       }
+      console.log("📤 Reply sent successfully!");
     } catch (err) {
-      console.error("Message Handling Error:", err);
-      await sock.sendMessage(jid, {
-        text: "I had a small glitch processing that. Try sending again!",
-      });
+      console.error("❌ CRITICAL HANDLER ERROR:", err);
     }
   });
 }
