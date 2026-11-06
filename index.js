@@ -16,17 +16,13 @@ http.createServer((req, res) => {
 let isPairingRequested = false;
 
 async function connectToWhatsApp() {
+  // FORCE WIPE auth_info on startup to prevent stale pairing rejection
   if (fs.existsSync("auth_info")) {
-    const credsPath = "auth_info/creds.json";
-    if (fs.existsSync(credsPath)) {
-      try {
-        const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
-        if (!creds.registered) {
-          fs.rmSync("auth_info", { recursive: true, force: true });
-        }
-      } catch (e) {
-        fs.rmSync("auth_info", { recursive: true, force: true });
-      }
+    try {
+      fs.rmSync("auth_info", { recursive: true, force: true });
+      console.log("🧹 Cleaned old auth_info directory for fresh pairing.");
+    } catch (e) {
+      console.error("Error clearing auth_info:", e);
     }
   }
 
@@ -50,10 +46,6 @@ async function connectToWhatsApp() {
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       console.log(`Connection closed (Status: ${statusCode}). Reconnecting in 5s...`);
-      if (statusCode === DisconnectReason.loggedOut) {
-        fs.rmSync("auth_info", { recursive: true, force: true });
-        isPairingRequested = false;
-      }
       setTimeout(connectToWhatsApp, 5000);
     } 
     else if (connection === "open") {
@@ -64,7 +56,8 @@ async function connectToWhatsApp() {
     }
   });
 
-  if (!sock.authState.creds.registered && !isPairingRequested) {
+  // Request pairing code shortly after startup
+  if (!isPairingRequested) {
     isPairingRequested = true;
     const phoneNumber = process.env.PHONE_NUMBER;
     
@@ -81,7 +74,7 @@ async function connectToWhatsApp() {
           console.error("Pairing code error:", err.message);
           isPairingRequested = false;
         }
-      }, 10000);
+      }, 8000);
     }
   }
 
@@ -103,16 +96,14 @@ async function connectToWhatsApp() {
         "";
 
       const hasImage = !!msg.message?.imageMessage;
-      console.log(`📝 Query: "${rawText}" | Image attached: ${hasImage}`);
-
       if (!rawText && !hasImage) return;
 
       const storeContext = await getStoreContextByPhone(senderPhone);
       const response = await processUserMessage(rawText, hasImage, storeContext);
 
-      if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
+      if (response.intent === "ADD_PRODUCT" && response.product?.title && response.product?.price) {
         let dbSaved = false;
-        if (storeContext && storeContext.store) {
+        if (storeContext?.store) {
           const savedItem = await insertProductDraft(storeContext.store.id, response.product);
           if (savedItem) dbSaved = true;
         }
@@ -128,8 +119,6 @@ async function connectToWhatsApp() {
       } else if (response.reply) {
         await sock.sendMessage(jid, { text: response.reply });
       }
-
-      console.log("📤 Response sent back to WhatsApp.");
     } catch (err) {
       console.error("❌ Message Processing Error:", err);
     }
