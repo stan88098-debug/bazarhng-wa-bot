@@ -3,10 +3,7 @@ import { neon } from "@neondatabase/serverless";
 export async function getStoreContextByPhone(phoneNumber) {
   try {
     const dbUrl = process.env.DATABASE_URL;
-    if (!dbUrl) {
-      console.log("⚠️ DATABASE_URL not set in environment.");
-      return null;
-    }
+    if (!dbUrl) return null;
     
     const sql = neon(dbUrl);
     const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
@@ -19,10 +16,7 @@ export async function getStoreContextByPhone(phoneNumber) {
       LIMIT 1
     `;
 
-    if (!stores || stores.length === 0) {
-      return null;
-    }
-
+    if (!stores || stores.length === 0) return null;
     const store = stores[0];
 
     const products = await sql`
@@ -33,10 +27,7 @@ export async function getStoreContextByPhone(phoneNumber) {
       LIMIT 20
     `;
 
-    return {
-      store,
-      products: products || [],
-    };
+    return { store, products: products || [] };
   } catch (err) {
     console.error("Database Lookup Error:", err.message);
     return null;

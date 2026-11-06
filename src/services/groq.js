@@ -64,8 +64,7 @@ JSON SCHEMA:
       response_format: { type: "json_object" },
     });
 
-    const parsed = JSON.parse(completion.choices[0]?.message?.content || "{}");
-    return parsed;
+    return JSON.parse(completion.choices[0]?.message?.content || "{}");
   } catch (err) {
     console.error("Groq Brain Error:", err);
     return {

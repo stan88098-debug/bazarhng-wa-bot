@@ -3,7 +3,6 @@ import { processUserMessage } from "./src/services/groq.js";
 import { getStoreContextByPhone, insertProductDraft } from "./src/db.js";
 import http from "http";
 import pino from "pino";
-import fs from "fs";
 
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
@@ -16,12 +15,6 @@ http.createServer((req, res) => {
 let isPairingRequested = false;
 
 async function connectToWhatsApp() {
-  if (fs.existsSync("auth_info")) {
-    try {
-      fs.rmSync("auth_info", { recursive: true, force: true });
-    } catch (e) {}
-  }
-
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
   const sock = makeWASocket({
@@ -37,7 +30,29 @@ async function connectToWhatsApp() {
   sock.ev.on("creds.update", saveCreds);
 
   sock.ev.on("connection.update", async (update) => {
-    const { connection, lastDisconnect } = update;
+    const { connection, lastDisconnect, qr } = update;
+
+    // Trigger pairing code safely when Baileys initializes the pairing challenge state
+    if (qr && !sock.authState.creds.registered && !isPairingRequested) {
+      isPairingRequested = true;
+      const phoneNumber = process.env.PHONE_NUMBER;
+      
+      if (phoneNumber) {
+        setTimeout(async () => {
+          try {
+            const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
+            console.log(`Requesting pairing code for ${cleanPhone}...`);
+            const code = await sock.requestPairingCode(cleanPhone);
+            console.log(`\n========================================`);
+            console.log(`👉 PAIRING CODE FOR WHATSAPP: ${code} 👈`);
+            console.log(`========================================\n`);
+          } catch (err) {
+            console.error("Pairing code error:", err.message);
+            isPairingRequested = false;
+          }
+        }, 4000);
+      }
+    }
 
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
@@ -51,27 +66,6 @@ async function connectToWhatsApp() {
       isPairingRequested = false;
     }
   });
-
-  if (!isPairingRequested) {
-    isPairingRequested = true;
-    const phoneNumber = process.env.PHONE_NUMBER;
-    
-    if (phoneNumber) {
-      setTimeout(async () => {
-        try {
-          const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
-          console.log(`Requesting pairing code for ${cleanPhone}...`);
-          const code = await sock.requestPairingCode(cleanPhone);
-          console.log(`\n========================================`);
-          console.log(`👉 PAIRING CODE FOR WHATSAPP: ${code} 👈`);
-          console.log(`========================================\n`);
-        } catch (err) {
-          console.error("Pairing code error:", err.message);
-          isPairingRequested = false;
-        }
-      }, 15000);
-    }
-  }
 
   sock.ev.on("messages.upsert", async (m) => {
     try {
