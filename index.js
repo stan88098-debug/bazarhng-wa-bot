@@ -51,6 +51,7 @@ async function connectToWhatsApp() {
     if (!jid || !jid.endsWith("@s.whatsapp.net")) return;
 
     const senderPhone = jid.split("@")[0];
+    console.log(`📥 Incoming message from ${senderPhone}`);
 
     const rawText =
       msg.message?.imageMessage?.caption ||
@@ -59,20 +60,20 @@ async function connectToWhatsApp() {
       "";
 
     const hasImage = !!msg.message?.imageMessage;
+    console.log(`📝 Extracted Text: "${rawText}" | Has Image: ${hasImage}`);
 
     if (!rawText && !hasImage) return;
 
     try {
-      // 1. Fetch live store context from Neon PostgreSQL
+      console.log("🔍 Fetching store context from Neon...");
       const storeContext = await getStoreContextByPhone(senderPhone);
 
-      // 2. Process message with Groq AI using store context
+      console.log("🤖 Sending to Groq...");
       const response = await processUserMessage(rawText, hasImage, storeContext);
+      console.log("💡 Groq Response:", JSON.stringify(response));
 
-      // 3. Handle Product Ingestion
       if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
         let dbSaved = false;
-        
         if (storeContext && storeContext.store) {
           const savedItem = await insertProductDraft(storeContext.store.id, response.product);
           if (savedItem) dbSaved = true;
@@ -89,8 +90,9 @@ async function connectToWhatsApp() {
       } else if (response.reply) {
         await sock.sendMessage(jid, { text: response.reply });
       }
+      console.log("📤 Reply sent successfully!");
     } catch (err) {
-      console.error("Message Handling Error:", err);
+      console.error("❌ Critical Message Handling Error:", err);
       await sock.sendMessage(jid, {
         text: "I had a small glitch processing that. Try sending again!",
       });
