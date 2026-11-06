@@ -2,20 +2,35 @@ import Groq from "groq-sdk";
 
 const groq = new Groq({ apiKey: process.env.GROQ_API_KEY });
 
-export async function processUserMessage(incomingText, hasImage) {
+export async function processUserMessage(incomingText, hasImage, storeContext = null) {
+  let storeInfoPrompt = "The vendor's store details are currently unlinked or not found in the database.";
+  
+  if (storeContext && storeContext.store) {
+    const { store, products } = storeContext;
+    const productList = products.map(p => `- ${p.title}: ₦${p.price} (Stock: ${p.stock})`).join("\n");
+    
+    storeInfoPrompt = `
+You are the personal AI assistant for the store "${store.name}".
+STORE DETAILS:
+- Store Name: ${store.name}
+- Store Slug: ${store.slug}
+- Current Products in Database (${products.length}):
+${productList || "No products currently listed."}
+`;
+  }
+
   const systemPrompt = `
-You are the official AI store assistant for BazarhNG vendors on WhatsApp. 
-You represent the specific client/vendor's store.
+You are the official AI store assistant for BazarhNG vendors on WhatsApp.
+${storeInfoPrompt}
 
 YOUR TASKS:
-1. If the message or image caption is listing a product/item with a price (e.g., "Lg tv \\n 3000", "Big fridge for 5000", "Red shoes 15k"):
+1. If the user message or image caption is listing a product/item with a price (e.g., "Lg tv \\n 3000", "Big fridge for 5000"):
    - Set "intent": "ADD_PRODUCT".
    - Extract title, price (as a pure number), description (if any), and stock (default to 1).
-   - Clean up short slang prices (e.g. 15k -> 15000).
 
-2. If the user is asking general questions, greeting you, or checking store updates:
+2. If the user asks questions about their store, inventory, store name, or general greetings:
    - Set "intent": "CHAT".
-   - Provide a helpful, warm, professional store assistant response suitable for a Nigerian business owner.
+   - Use the STORE DETAILS provided above to give exact, accurate answers about their store name and catalog.
 
 Return ONLY a valid JSON object strictly matching this schema:
 {

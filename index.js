@@ -1,5 +1,6 @@
 import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeysockets/baileys";
 import { processUserMessage } from "./src/services/groq.js";
+import { getStoreContextByPhone, insertProductDraft } from "./src/db.js";
 import pino from "pino";
 
 async function connectToWhatsApp() {
@@ -7,8 +8,8 @@ async function connectToWhatsApp() {
 
   const sock = makeWASocket({
     auth: state,
-    logger: pino({ level: "silent" }), // Keeps logs clean
-    printQRInTerminal: false, // We use pairing code instead
+    logger: pino({ level: "silent" }),
+    printQRInTerminal: false,
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -26,7 +27,6 @@ async function connectToWhatsApp() {
     }
   });
 
-  // If not registered, request pairing code via phone number (Set your phone number in Railway env vars as PHONE_NUMBER, e.g., 23480xxxxxxxx)
   if (!sock.authState.creds.registered) {
     const phoneNumber = process.env.PHONE_NUMBER;
     if (phoneNumber) {
@@ -40,8 +40,6 @@ async function connectToWhatsApp() {
           console.error("Error requesting pairing code:", err);
         }
       }, 3000);
-    } else {
-      console.log("⚠️ No PHONE_NUMBER environment variable set in Railway. Set it to generate a pairing code.");
     }
   }
 
@@ -50,7 +48,9 @@ async function connectToWhatsApp() {
     if (!msg || msg.key.fromMe) return;
 
     const jid = msg.key.remoteJid;
-    if (!jid) return;
+    if (!jid || !jid.endsWith("@s.whatsapp.net")) return;
+
+    const senderPhone = jid.split("@")[0];
 
     const rawText =
       msg.message?.imageMessage?.caption ||
@@ -63,11 +63,23 @@ async function connectToWhatsApp() {
     if (!rawText && !hasImage) return;
 
     try {
-      const response = await processUserMessage(rawText, hasImage);
+      // 1. Fetch live store context from Neon PostgreSQL
+      const storeContext = await getStoreContextByPhone(senderPhone);
 
+      // 2. Process message with Groq AI using store context
+      const response = await processUserMessage(rawText, hasImage, storeContext);
+
+      // 3. Handle Product Ingestion
       if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
+        let dbSaved = false;
+        
+        if (storeContext && storeContext.store) {
+          const savedItem = await insertProductDraft(storeContext.store.id, response.product);
+          if (savedItem) dbSaved = true;
+        }
+
         const confirmText =
-          `✅ *Added to your shop draft!*\n\n` +
+          `✅ *Added to your shop draft!*${dbSaved ? " (Saved to DB)" : ""}\n\n` +
           `📦 *Item:* ${response.product.title}\n` +
           `💰 *Price:* ₦${Number(response.product.price).toLocaleString()}\n` +
           `📊 *Stock:* ${response.product.stock || 1}\n\n` +
@@ -78,9 +90,9 @@ async function connectToWhatsApp() {
         await sock.sendMessage(jid, { text: response.reply });
       }
     } catch (err) {
-      console.error("Groq Handling Error:", err);
+      console.error("Message Handling Error:", err);
       await sock.sendMessage(jid, {
-        text: "I had a small glitch processing that. Send the photo with the name and price in the caption!",
+        text: "I had a small glitch processing that. Try sending again!",
       });
     }
   });
