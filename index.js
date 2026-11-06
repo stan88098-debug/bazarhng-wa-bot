@@ -13,12 +13,16 @@ http.createServer((req, res) => {
   console.log(`🚀 Render HTTP Health Check server listening on port ${PORT}`);
 });
 
-let isPairingRequested = false;
+let sock = null;
+let isConnecting = false;
 
 async function connectToWhatsApp() {
+  if (isConnecting) return;
+  isConnecting = true;
+
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
-  const sock = makeWASocket({
+  sock = makeWASocket({
     auth: state,
     logger: pino({ level: "silent" }),
     printQRInTerminal: false,
@@ -27,7 +31,7 @@ async function connectToWhatsApp() {
     connectTimeoutMs: 60000,
     defaultQueryTimeoutMs: 60000,
     keepAliveIntervalMs: 30000,
-    retryRequestDelayMs: 2000,
+    retryRequestDelayMs: 3000,
   });
 
   sock.ev.on("creds.update", saveCreds);
@@ -36,19 +40,17 @@ async function connectToWhatsApp() {
     const { connection, lastDisconnect } = update;
 
     if (connection === "close") {
+      isConnecting = false;
       const statusCode = lastDisconnect?.error?.output?.statusCode;
       const errorMessage = lastDisconnect?.error?.message;
-      console.log(`Connection closed (Status: ${statusCode || 'unknown'}, Error: ${errorMessage || 'none'}). Reconnecting in 5s...`);
+      console.log(`Connection closed (Status: ${statusCode || 'unknown'}, Error: ${errorMessage || 'none'}). Reconnecting in 10s...`);
       
-      if (statusCode !== DisconnectReason.loggedOut) {
-        setTimeout(connectToWhatsApp, 5000);
-      } else {
-        console.log("Device logged out. Clearing auth_info...");
-        fs.rmSync("auth_info", { recursive: true, force: true });
-        setTimeout(connectToWhatsApp, 5000);
-      }
+      // Prevent rapid fire loops on conflict 440
+      const delay = statusCode === 440 ? 15000 : 5000;
+      setTimeout(connectToWhatsApp, delay);
     } 
     else if (connection === "open") {
+      isConnecting = false;
       console.log("\n==================================================");
       console.log("✅ WHATSAPP BOT CONNECTED & ONLINE SUCCESSFULLY!");
       console.log("==================================================\n");
@@ -78,10 +80,7 @@ async function connectToWhatsApp() {
       if (!rawText && !hasImage) return;
 
       const storeContext = await getStoreContextByPhone(senderPhone);
-      console.log(`🏪 Store Context Found for ${senderPhone}:`, storeContext ? storeContext.store.name : "None");
-
       const response = await processUserMessage(rawText, hasImage, storeContext);
-      console.log(`🤖 Groq Response Intent:`, response.intent, `| Reply:`, response.reply);
 
       if (response.intent === "ADD_PRODUCT" && response.product?.title && response.product?.price) {
         let dbSaved = false;
