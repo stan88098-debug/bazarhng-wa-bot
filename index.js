@@ -1,5 +1,5 @@
-const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require("@whiskeysockets/baileys");
-const { processUserMessage } = require("./src/services/groq");
+import makeWASocket, { useMultiFileAuthState, DisconnectReason } from "@whiskeysockets/baileys";
+import { processUserMessage } from "./src/services/groq.js";
 
 async function connectToWhatsApp() {
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
@@ -15,12 +15,12 @@ async function connectToWhatsApp() {
     const { connection, lastDisconnect } = update;
     if (connection === "close") {
       const shouldReconnect = lastDisconnect?.error?.output?.statusCode !== DisconnectReason.loggedOut;
-      console.log("Connection closed due to ", lastDisconnect.error, ", reconnecting: ", shouldReconnect);
+      console.log("Connection closed, reconnecting: ", shouldReconnect);
       if (shouldReconnect) {
         connectToWhatsApp();
       }
     } else if (connection === "open") {
-      console.log("WhatsApp Connection Opened Successfully!");
+      console.log("WhatsApp Bot Connected & Online!");
     }
   });
 
@@ -31,7 +31,6 @@ async function connectToWhatsApp() {
     const jid = msg.key.remoteJid;
     if (!jid) return;
 
-    // Extract text from standard text, image captions, or extended messages
     const rawText =
       msg.message?.imageMessage?.caption ||
       msg.message?.conversation ||
@@ -43,7 +42,6 @@ async function connectToWhatsApp() {
     if (!rawText && !hasImage) return;
 
     try {
-      // Send directly to the new Groq AI parser
       const response = await processUserMessage(rawText, hasImage);
 
       if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
@@ -52,16 +50,16 @@ async function connectToWhatsApp() {
           `📦 *Item:* ${response.product.title}\n` +
           `💰 *Price:* ₦${Number(response.product.price).toLocaleString()}\n` +
           `📊 *Stock:* ${response.product.stock || 1}\n\n` +
-          `Log in to your BazarhNG dashboard to publish it live!`;
+          `Check your BazarhNG dashboard to publish it live!`;
 
         await sock.sendMessage(jid, { text: confirmText });
       } else if (response.reply) {
         await sock.sendMessage(jid, { text: response.reply });
       }
     } catch (err) {
-      console.error("Error processing message with Groq:", err);
+      console.error("Groq Handling Error in index.js:", err);
       await sock.sendMessage(jid, {
-        text: "I had a glitch parsing that message. Could you try sending the photo with the item name and price in the caption?",
+        text: "I had a small glitch processing that. Send the photo with the name and price in the caption!",
       });
     }
   });
