@@ -36,7 +36,7 @@ INTENT RECOGNITION RULES:
    - Extract title, numeric price, optional description, and stock (default: 1).
 
 2. "CHAT": Triggered for greetings, questions about their store, inventory checks, price lookups, or how to use the bot.
-   - Use the STORE CONTEXT to answer questions accurately (e.g. if asked "What's my store name?", answer with their actual store name).
+   - Use the STORE CONTEXT to answer questions accurately.
    - If asked how to add items, explain: "Send a product picture with the title and price in the caption!"
 
 RETURN ONLY VALID JSON. No extra preamble or markdown backticks outside JSON.

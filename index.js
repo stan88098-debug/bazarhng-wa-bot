@@ -16,6 +16,20 @@ http.createServer((req, res) => {
 let isPairingRequested = false;
 
 async function connectToWhatsApp() {
+  if (fs.existsSync("auth_info")) {
+    const credsPath = "auth_info/creds.json";
+    if (fs.existsSync(credsPath)) {
+      try {
+        const creds = JSON.parse(fs.readFileSync(credsPath, "utf-8"));
+        if (!creds.registered) {
+          fs.rmSync("auth_info", { recursive: true, force: true });
+        }
+      } catch (e) {
+        fs.rmSync("auth_info", { recursive: true, force: true });
+      }
+    }
+  }
+
   const { state, saveCreds } = await useMultiFileAuthState("auth_info");
 
   const sock = makeWASocket({
@@ -32,16 +46,20 @@ async function connectToWhatsApp() {
 
   sock.ev.on("connection.update", async (update) => {
     const { connection, lastDisconnect } = update;
+
     if (connection === "close") {
       const statusCode = lastDisconnect?.error?.output?.statusCode;
-      console.log(`Connection closed (Status: ${statusCode}). Reconnecting...`);
+      console.log(`Connection closed (Status: ${statusCode}). Reconnecting in 5s...`);
       if (statusCode === DisconnectReason.loggedOut) {
         fs.rmSync("auth_info", { recursive: true, force: true });
         isPairingRequested = false;
       }
       setTimeout(connectToWhatsApp, 5000);
-    } else if (connection === "open") {
+    } 
+    else if (connection === "open") {
+      console.log("\n==================================================");
       console.log("✅ WHATSAPP BOT CONNECTED & ONLINE SUCCESSFULLY!");
+      console.log("==================================================\n");
       isPairingRequested = false;
     }
   });
@@ -49,35 +67,35 @@ async function connectToWhatsApp() {
   if (!sock.authState.creds.registered && !isPairingRequested) {
     isPairingRequested = true;
     const phoneNumber = process.env.PHONE_NUMBER;
+    
     if (phoneNumber) {
       setTimeout(async () => {
         try {
           const cleanPhone = phoneNumber.replace(/[^0-9]/g, "");
+          console.log(`Fetching fresh pairing code for ${cleanPhone}...`);
           const code = await sock.requestPairingCode(cleanPhone);
+          console.log(`\n========================================`);
           console.log(`👉 PAIRING CODE FOR WHATSAPP: ${code} 👈`);
+          console.log(`========================================\n`);
         } catch (err) {
-          console.error("Pairing error:", err.message);
+          console.error("Pairing code error:", err.message);
           isPairingRequested = false;
         }
       }, 10000);
     }
   }
 
-  // Catch-all raw event logger to see if WhatsApp is talking to us
   sock.ev.on("messages.upsert", async (m) => {
-    console.log("🔥 RAW MESSAGES EVENT FIRED:", JSON.stringify(m, null, 2));
     try {
       const msg = m.messages[0];
-      if (!msg) return;
-      
-      console.log("📥 Message payload detected from:", msg.key.remoteJid);
-      if (msg.key.fromMe) {
-        console.log("⚠️ Ignored: Message sent by self.");
-        return;
-      }
+      if (!msg || msg.key.fromMe) return;
 
       const jid = msg.key.remoteJid;
+      if (!jid || !jid.endsWith("@s.whatsapp.net")) return;
+
       const senderPhone = jid.split("@")[0];
+      console.log(`\n📥 Message received from ${senderPhone}`);
+
       const rawText =
         msg.message?.imageMessage?.caption ||
         msg.message?.conversation ||
@@ -85,27 +103,35 @@ async function connectToWhatsApp() {
         "";
 
       const hasImage = !!msg.message?.imageMessage;
-      console.log(`📝 Text: "${rawText}" | Image: ${hasImage}`);
+      console.log(`📝 Query: "${rawText}" | Image attached: ${hasImage}`);
 
       if (!rawText && !hasImage) return;
 
       const storeContext = await getStoreContextByPhone(senderPhone);
       const response = await processUserMessage(rawText, hasImage, storeContext);
 
-      if (response.intent === "ADD_PRODUCT" && response.product?.title && response.product?.price) {
+      if (response.intent === "ADD_PRODUCT" && response.product && response.product.title && response.product.price) {
         let dbSaved = false;
-        if (storeContext?.store) {
+        if (storeContext && storeContext.store) {
           const savedItem = await insertProductDraft(storeContext.store.id, response.product);
           if (savedItem) dbSaved = true;
         }
-        await sock.sendMessage(jid, {
-          text: `✅ *Added to shop drafts!*${dbSaved ? " (Saved to Database)" : ""}\n\n📦 *Item:* ${response.product.title}\n💰 *Price:* ₦${Number(response.product.price).toLocaleString()}`
-        });
+
+        const confirmText =
+          `✅ *Added to shop drafts!*${dbSaved ? " (Saved to Database)" : ""}\n\n` +
+          `📦 *Item:* ${response.product.title}\n` +
+          `💰 *Price:* ₦${Number(response.product.price).toLocaleString()}\n` +
+          `📊 *Stock:* ${response.product.stock || 1}\n\n` +
+          `Log into your BazarhNG dashboard to publish it live!`;
+
+        await sock.sendMessage(jid, { text: confirmText });
       } else if (response.reply) {
         await sock.sendMessage(jid, { text: response.reply });
       }
+
+      console.log("📤 Response sent back to WhatsApp.");
     } catch (err) {
-      console.error("❌ Error handling message:", err);
+      console.error("❌ Message Processing Error:", err);
     }
   });
 }
