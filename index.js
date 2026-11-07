@@ -10,7 +10,6 @@ import makeWASocket, {
 } from "@whiskeysockets/baileys";
 import { v2 as cloudinary } from "cloudinary";
 import pino from "pino";
-import { Boom } from "@hapi/boom";
 
 import {
   ensureSchema,
@@ -91,12 +90,13 @@ function formatNaira(n) {
   return num.toLocaleString("en-NG");
 }
 
-function confirmationMessage(product) {
+function confirmationMessage(product, storeName) {
   return (
-    `✅ Added to shop drafts!\n\n` +
+    `✅ Added to shop drafts for ${storeName}!\n\n` +
     `📦 Item: ${product.title}\n` +
     `💰 Price: ₦${formatNaira(product.price)}\n` +
     `📊 Stock: ${product.stock}\n\n` +
+    `🔗 View Store: https://bazarhng.netlify.app\n\n` +
     `Log into your BazarhNG dashboard to publish it live!`
   );
 }
@@ -209,17 +209,17 @@ async function startSock() {
             }
 
             const row = await insertProductDraft(storeContext.id, result.product);
-            const body = confirmationMessage(row);
+            const body = confirmationMessage(row, storeContext.name);
             await sock.sendMessage(remoteJid, { text: body });
-            console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title} with image: ${imageUrl || 'none'}`);
+            console.log(`[product] draft #${row.id} for store ${storeContext.name}: ${row.title}`);
           } else {
-            await sock.sendMessage(remoteJid, { text: result.reply || `Hi from ${storeContext.name}! How can I help your shop today?` });
+            await sock.sendMessage(remoteJid, { text: result.reply || `Hello from ${storeContext.name}! How can I assist you today?` });
           }
         } catch (err) {
           console.error("[msg] handler error:", err.message || err);
           try {
             if (msg?.key?.remoteJid) {
-              await sock.sendMessage(msg.key.remoteJid, { text: "Something went wrong saving that. Please try again in a moment." });
+              await sock.sendMessage(msg.key.remoteJid, { text: `Hi! Send a product photo with your price (e.g. "Item name ₦5,000") to add it to your shop drafts.` });
             }
           } catch {}
         }
