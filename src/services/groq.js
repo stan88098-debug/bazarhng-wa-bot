@@ -1,15 +1,19 @@
-export async function processUserMessage(rawText, hasImage, storeContext) {
+export async function processUserMessage(rawText, hasImage, storeContext, storeStats) {
   try {
     const apiKey = String(process.env.GROQ_API_KEY || "").trim();
-    const prompt = `You are an elite, highly intelligent AI business partner and co-pilot for "${storeContext.name}", a store on the BazarhNG e-commerce platform in Nigeria.
-Address the store owner warmly or reference their store name. You possess versatile knowledge across business strategy, pricing, marketing, inventory management, e-commerce tips, and general knowledge.
+    const prompt = `You are an elite, all-in-one AI business partner and co-pilot for "${storeContext.name}", a store on the BazarhNG e-commerce platform in Nigeria.
+Address the store owner warmly. You possess live database data for this store:
+- Total Products in Database: ${storeStats.totalProducts}
+- Draft Items: ${storeStats.draftsCount}
+- Active Live Items: ${storeStats.activeCount}
+- Recent Inventory: ${JSON.stringify(storeStats.recentItems)}
 
 The store owner sent this message on WhatsApp: "${rawText}"
 ${hasImage ? "[The owner also attached a product photo]" : ""}
 
 Determine the owner's intent:
 1. If they want to add/list a product (has product details/image), extract it as ADD_PRODUCT.
-2. If they are asking a question about their store, business advice, general knowledge, greetings, or chatting, answer it as CHAT with a smart, helpful, professional, and friendly tone.
+2. If they are asking questions about their store inventory, stats, business advice, pricing, marketing, or general knowledge, answer it as CHAT using the live database stats provided above. Be direct, accurate, and helpful.
 
 Return ONLY a valid JSON object with no markdown formatting:
 {
@@ -19,7 +23,7 @@ Return ONLY a valid JSON object with no markdown formatting:
     "price": number in Naira (e.g. 5000),
     "stock": number (default 1)
   },
-  "reply": "Your intelligent, helpful response or product confirmation here."
+  "reply": "Your intelligent response using live store stats or product confirmation here."
 }`;
 
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -56,13 +60,13 @@ Return ONLY a valid JSON object with no markdown formatting:
       return {
         intent: "ADD_PRODUCT",
         product: { title, price, stock: 1 },
-        reply: `✅ Added to shop drafts for ${storeContext.name}!`
+        reply: `✅ Added to shop drafts for ${storeContext.name}!\n\n🔗 View Store: https://bazarhng.netlify.app`
       };
     }
 
     return {
       intent: "CHAT",
-      reply: `Hello ${storeContext.name} owner! I'm your BazarhNG AI co-pilot. I am ready to help you manage your store, set prices, and answer any questions. What would you like to do today?`
+      reply: `Hello ${storeContext.name}! You currently have ${storeStats.totalProducts} total products (${storeStats.draftsCount} drafts) in your store. How can I help you manage your inventory or grow your business today?`
     };
   }
 }

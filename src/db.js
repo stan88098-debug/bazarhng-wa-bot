@@ -1,136 +1,94 @@
-import postgres from "postgres";
+import pkg from "pg";
+const { Pool } = pkg;
 
-if (!process.env.DATABASE_URL) {
-  console.error("[db] DATABASE_URL is missing");
-  process.exit(1);
-}
-
-export const sql = postgres(process.env.DATABASE_URL, {
-  ssl: "require",
-  max: 5,
-  idle_timeout: 20,
-  connect_timeout: 30,
+const pool = new Pool({
+  connectionString: process.env.DATABASE_URL,
+  ssl: { rejectUnauthorized: false }
 });
 
-function generateHandle(title) {
-  const base = String(title || "product")
-    .toLowerCase()
-    .replace(/[^\w\s-]/g, "")
-    .replace(/\s+/g, "-")
-    .slice(0, 50);
-  const rand = Math.random().toString(36).substring(2, 7);
-  return `${base}-${rand}`;
-}
-
 export async function ensureSchema() {
-  const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM businesses`;
-  console.log(`[db] connected successfully. Found ${count} businesses in DB.`);
+  const client = await pool.connect();
+  try {
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS stores (
+        id SERIAL PRIMARY KEY,
+        name VARCHAR(255) NOT NULL,
+        phone VARCHAR(50) UNIQUE NOT NULL,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS products (
+        id SERIAL PRIMARY KEY,
+        store_id INTEGER REFERENCES stores(id) ON DELETE CASCADE,
+        title VARCHAR(150) NOT NULL,
+        price NUMERIC(12, 2) NOT NULL,
+        stock INTEGER DEFAULT 1,
+        status VARCHAR(50) DEFAULT 'draft',
+        image_url TEXT,
+        created_at TIMESTAMP DEFAULT NOW()
+      );
+    `);
+    console.log("[db] schema verified successfully.");
+  } finally {
+    client.release();
+  }
 }
 
 export async function getStoreContextByPhone(phone) {
+  const client = await pool.connect();
   try {
-    const clean = String(phone || "").replace(/\D/g, "");
-    const local10 = clean.slice(-10);
-
-    if (local10.length === 10) {
-      const rows = await sql`
-        SELECT id, business_name, owner_phone, whatsapp_phone
-        FROM businesses
-        WHERE RIGHT(REGEXP_REPLACE(COALESCE(owner_phone, ''), '[^0-9]', '', 'g'), 10) = ${local10}
-           OR RIGHT(REGEXP_REPLACE(COALESCE(whatsapp_phone, ''), '[^0-9]', '', 'g'), 10) = ${local10}
-        LIMIT 1
-      `;
-      if (rows.length > 0) {
-        console.log(`✅ Matched phone ${phone} to business:`, rows[0].business_name);
-        return { 
-          id: rows[0].id, 
-          name: rows[0].business_name, 
-          phone: rows[0].owner_phone || rows[0].whatsapp_phone 
-        };
-      }
+    const cleanPhone = phone.replace(/\D/g, "");
+    const res = await client.query(
+      "SELECT id, name, phone FROM stores WHERE phone LIKE $1 OR phone LIKE $2 LIMIT 1",
+      [`%${cleanPhone}%`, `%${phone}%`]
+    );
+    if (res.rows.length === 0) {
+      const allStores = await client.query("SELECT id, name, phone FROM stores");
+      console.log(`[db] lookup phone '${phone}' failed. Available stores in DB:`, allStores.rows);
+      return null;
     }
-
-    const [capalot] = await sql`
-      SELECT id, business_name, owner_phone 
-      FROM businesses 
-      WHERE business_name ILIKE '%capalot%' 
-      LIMIT 1
-    `;
-    if (capalot) {
-      return { id: capalot.id, name: capalot.business_name, phone: capalot.owner_phone };
-    }
-
-    const [fallback] = await sql`SELECT id, business_name, owner_phone FROM businesses ORDER BY id ASC LIMIT 1`;
-    return fallback ? { id: fallback.id, name: fallback.business_name, phone: fallback.owner_phone } : null;
-  } catch (err) {
-    console.error("[db] getStoreContextByPhone error:", err.message);
-    return null;
+    return res.rows[0];
+  } finally {
+    client.release();
   }
 }
 
-export async function insertProductDraft(businessId, product) {
-  const title = String(product.title || "Untitled item").trim().slice(0, 200);
-  const nairaPrice = Number(product.price) || 0;
-  const priceKobo = Math.round(nairaPrice * 100);
-  const stock = Number.isFinite(Number(product.stock)) ? Math.max(0, Math.floor(Number(product.stock))) : 1;
-  const handle = generateHandle(title);
-  const imageUrl = product.image_url || product.imageUrl || null;
+export async function getStoreStats(storeId) {
+  const client = await pool.connect();
+  try {
+    const totalRes = await client.query("SELECT COUNT(*) FROM products WHERE store_id = $1", [storeId]);
+    const draftsRes = await client.query("SELECT COUNT(*) FROM products WHERE store_id = $1 AND status = 'draft'", [storeId]);
+    const activeRes = await client.query("SELECT COUNT(*) FROM products WHERE store_id = $1 AND status = 'active'", [storeId]);
+    const recentRes = await client.query("SELECT title, price, status FROM products WHERE store_id = $1 ORDER BY created_at DESC LIMIT 3", [storeId]);
 
-  // 1. Insert product with lowercase 'draft' status enum requirement
-  const [row] = await sql`
-    INSERT INTO products (
-      business_id, 
-      name, 
-      handle, 
-      price_kobo, 
-      status, 
-      currency, 
-      sort_order, 
-      stock_quantity, 
-      image_url
-    )
-    VALUES (
-      ${businessId},
-      ${title},
-      ${handle},
-      ${priceKobo},
-      'draft',
-      'NGN',
-      0,
-      ${stock},
-      ${imageUrl}
-    )
-    RETURNING id, business_id, name, price_kobo, stock_quantity, status, image_url, created_at
-  `;
-
-  // 2. Insert into product_images table so the frontend query map finds the image URL
-  if (imageUrl && row?.id) {
-    try {
-      let publicId = "bazarhng_products/prod_" + row.id;
-      try {
-        const parts = imageUrl.split("/");
-        const filenameWithExt = parts[parts.length - 1];
-        const filename = filenameWithExt.split(".")[0];
-        const folder = parts[parts.length - 2];
-        if (folder && filename) {
-          publicId = `${folder}/${filename}`;
-        }
-      } catch {}
-
-      await sql`
-        INSERT INTO product_images (product_id, cloudinary_public_id, url, sort_order)
-        VALUES (${row.id}, ${publicId}, ${imageUrl}, 0)
-      `;
-      console.log(`[db] successfully linked image in product_images for product ${row.id}`);
-    } catch (err) {
-      console.error("[db] product_images insert error:", err.message);
-    }
+    return {
+      totalProducts: Number(totalRes.rows[0].count),
+      draftsCount: Number(draftsRes.rows[0].count),
+      activeCount: Number(activeRes.rows[0].count),
+      recentItems: recentRes.rows
+    };
+  } finally {
+    client.release();
   }
+}
 
-  return {
-    id: row.id,
-    title: row.name,
-    price: Number(row.price_kobo) / 100,
-    stock: row.stock_quantity
-  };
+export async function insertProductDraft(storeId, product) {
+  const client = await pool.connect();
+  try {
+    const title = String(product.title || "Product Draft").slice(0, 150);
+    const price = Number(product.price) || 0;
+    const stock = Number(product.stock) || 1;
+    const imageUrl = product.image_url || null;
+
+    const res = await client.query(
+      `INSERT INTO products (store_id, title, price, stock, status, image_url) 
+       VALUES ($1, $2, $3, $4, 'draft', $5) RETURNING *`,
+      [storeId, title, price, stock, imageUrl]
+    );
+    return res.rows[0];
+  } finally {
+    client.release();
+  }
 }

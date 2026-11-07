@@ -14,6 +14,7 @@ import pino from "pino";
 import {
   ensureSchema,
   getStoreContextByPhone,
+  getStoreStats,
   insertProductDraft,
 } from "./src/db.js";
 import { processUserMessage } from "./src/services/groq.js";
@@ -176,7 +177,6 @@ async function startSock() {
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       for (const msg of messages) {
         try {
-          // STRICT FILTER: Ignore own messages, status broadcasts, newsletters, and group chats
           const remoteJid = msg.key.remoteJid;
           if (!msg.message || msg.key.fromMe || !remoteJid) continue;
           if (remoteJid.includes("status") || remoteJid.includes("newsletter") || remoteJid.endsWith("@g.us")) continue;
@@ -184,12 +184,8 @@ async function startSock() {
           const senderPhone = jidToPhone(remoteJid);
           if (!senderPhone) continue;
 
-          // Verify sender belongs to a registered store in DB first!
           const storeContext = await getStoreContextByPhone(senderPhone);
-          if (!storeContext) {
-            console.log(`[security] ignored message from unregistered phone: ${senderPhone}`);
-            continue;
-          }
+          if (!storeContext) continue;
 
           const rawText = extractText(msg).trim();
           const hasImage = hasImageMessage(msg);
@@ -201,14 +197,16 @@ async function startSock() {
             imageUrl = await uploadWhatsAppImageToCloudinary(msg);
           }
 
-          const result = await processUserMessage(rawText, hasImage, storeContext);
+          // Fetch live database stats for this store
+          const storeStats = await getStoreStats(storeContext.id);
+
+          const result = await processUserMessage(rawText, hasImage, storeContext, storeStats);
           console.log(`[ai] intent resolved for ${storeContext.name}: ${result.intent}`);
 
           if (result.intent === "ADD_PRODUCT") {
             if (imageUrl) {
               result.product.image_url = imageUrl;
             }
-            // Safeguard title length for database
             if (result.product.title) {
               result.product.title = String(result.product.title).slice(0, 150);
             }
