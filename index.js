@@ -30,6 +30,16 @@ const PORT = Number(process.env.PORT) || 10000;
 const LOCK_FILE = path.join(process.cwd(), ".bot.instance.lock");
 const PAIRING_NUMBER = "2347066568228";
 
+// Force-wipe auth_info on fresh boot to guarantee pairing code prompt appears
+try {
+  if (fs.existsSync(AUTH_DIR)) {
+    fs.rmSync(AUTH_DIR, { recursive: true, force: true });
+    console.log("[auth] Cleared old auth_info for fresh pairing code generation.");
+  }
+} catch (e) {
+  console.error("[auth] clear error:", e.message);
+}
+
 function acquireInstanceLock() {
   try {
     if (fs.existsSync(LOCK_FILE)) {
@@ -186,11 +196,11 @@ async function startSock() {
       }
     });
 
-    // Request pairing code only after socket is initialized and if not registered
+    // Request pairing code immediately if unregistered
     if (!sock.authState.creds.registered) {
       setTimeout(async () => {
         try {
-          console.log("[pairing] requesting pairing code...");
+          console.log("[pairing] requesting pairing code for:", PAIRING_NUMBER);
           const code = await sock.requestPairingCode(PAIRING_NUMBER);
           console.log(`\n========================================`);
           console.log(`PAIRING CODE FOR ${PAIRING_NUMBER}: ${code}`);
@@ -198,7 +208,7 @@ async function startSock() {
         } catch (err) {
           console.error("[pairing] error requesting code:", err.message);
         }
-      }, 6000);
+      }, 5000);
     }
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
