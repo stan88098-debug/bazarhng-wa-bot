@@ -174,59 +174,54 @@ async function startSock() {
     });
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-      console.log(`[wa] messages.upsert triggered, type: ${type}, count: ${messages?.length}`);
-
       for (const msg of messages) {
         try {
-          if (!msg.message || msg.key.fromMe || msg.key.remoteJid === "status@broadcast" || msg.key.remoteJid?.endsWith("@g.us")) continue;
-
+          // STRICT FILTER: Ignore own messages, status broadcasts, newsletters, and group chats
           const remoteJid = msg.key.remoteJid;
+          if (!msg.message || msg.key.fromMe || !remoteJid) continue;
+          if (remoteJid.includes("status") || remoteJid.includes("newsletter") || remoteJid.endsWith("@g.us")) continue;
+
           const senderPhone = jidToPhone(remoteJid);
-          console.log(`[wa] incoming message from phone: ${senderPhone}, jid: ${remoteJid}`);
           if (!senderPhone) continue;
+
+          // Verify sender belongs to a registered store in DB first!
+          const storeContext = await getStoreContextByPhone(senderPhone);
+          if (!storeContext) {
+            console.log(`[security] ignored message from unregistered phone: ${senderPhone}`);
+            continue;
+          }
 
           const rawText = extractText(msg).trim();
           const hasImage = hasImageMessage(msg);
-          console.log(`[wa] text: "${rawText}", hasImage: ${hasImage}`);
           if (!rawText && !hasImage) continue;
-
-          const storeContext = await getStoreContextByPhone(senderPhone);
-          if (!storeContext) {
-            console.log(`[db] no store found for phone: ${senderPhone}`);
-            await sock.sendMessage(remoteJid, { text: "⚠️ No business store found linked to this WhatsApp number." });
-            continue;
-          }
 
           let imageUrl = null;
           if (hasImage) {
             console.log("[media] downloading and uploading product photo to Cloudinary...");
             imageUrl = await uploadWhatsAppImageToCloudinary(msg);
-            console.log("[media] upload result URL:", imageUrl);
           }
 
           const result = await processUserMessage(rawText, hasImage, storeContext);
-          console.log(`[ai] intent resolved: ${result.intent}`);
+          console.log(`[ai] intent resolved for ${storeContext.name}: ${result.intent}`);
 
           if (result.intent === "ADD_PRODUCT") {
             if (imageUrl) {
               result.product.image_url = imageUrl;
             }
+            // Safeguard title length for database
+            if (result.product.title) {
+              result.product.title = String(result.product.title).slice(0, 150);
+            }
 
             const row = await insertProductDraft(storeContext.id, result.product);
             const body = confirmationMessage(row, storeContext.name);
             await sock.sendMessage(remoteJid, { text: body });
-            console.log(`[product] draft #${row.id} for store ${storeContext.name}: ${row.title}`);
           } else {
-            await sock.sendMessage(remoteJid, { text: result.reply || `Hello from ${storeContext.name}! How can I assist you today?` });
-            console.log(`[chat] replied to ${senderPhone}`);
+            const replyText = result.reply || `Hello from ${storeContext.name}! How can I assist you today?`;
+            await sock.sendMessage(remoteJid, { text: replyText });
           }
         } catch (err) {
           console.error("[msg] handler error:", err.message || err);
-          try {
-            if (msg?.key?.remoteJid) {
-              await sock.sendMessage(msg.key.remoteJid, { text: `Hi! Send a product photo with your price (e.g. "Item name ₦5,000") to add it to your shop drafts.` });
-            }
-          } catch {}
         }
       }
     });
