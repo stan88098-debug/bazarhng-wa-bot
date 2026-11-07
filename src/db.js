@@ -35,50 +35,37 @@ export async function ensureSchema() {
 export async function getStoreContextByPhone(phone) {
   try {
     const suffix = phoneSuffix(phone);
-    let rows = [];
     if (suffix.length >= 10) {
-      rows = await sql`
+      // Search exact match on owner_phone or whatsapp_phone suffix
+      const rows = await sql`
         SELECT id, business_name, owner_phone, whatsapp_phone
         FROM businesses
-        WHERE RIGHT(REGEXP_REPLACE(COALESCE(owner_phone, whatsapp_phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
-        ORDER BY id ASC
+        WHERE RIGHT(REGEXP_REPLACE(COALESCE(owner_phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
+           OR RIGHT(REGEXP_REPLACE(COALESCE(whatsapp_phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
         LIMIT 1
       `;
+      if (rows.length > 0) {
+        return { 
+          id: rows[0].id, 
+          name: rows[0].business_name, 
+          phone: rows[0].owner_phone || rows[0].whatsapp_phone 
+        };
+      }
     }
 
-    if (!rows.length) {
-      rows = await sql`
-        SELECT id, business_name, owner_phone, whatsapp_phone
-        FROM businesses
-        ORDER BY id ASC
-        LIMIT 1
-      `;
-    }
-
-    const business = rows[0];
-    if (!business) {
-      throw new Error("No businesses found in the database.");
-    }
-
-    return { 
-      id: business.id, 
-      name: business.business_name, 
-      phone: business.owner_phone || business.whatsapp_phone 
-    };
-  } catch (err) {
-    console.error("[db] getStoreContextByPhone error:", err.message);
+    // Fallback if no exact match found
     const [fallback] = await sql`SELECT id, business_name, owner_phone FROM businesses ORDER BY id ASC LIMIT 1`;
     return fallback ? { id: fallback.id, name: fallback.business_name, phone: fallback.owner_phone } : null;
+  } catch (err) {
+    console.error("[db] getStoreContextByPhone error:", err.message);
+    return null;
   }
 }
 
 export async function insertProductDraft(businessId, product) {
   const title = String(product.title || "Untitled item").trim().slice(0, 200);
-  
-  // Convert Naira to kobo (integer) as required by price_kobo
   const nairaPrice = Number(product.price) || 0;
   const priceKobo = Math.round(nairaPrice * 100);
-
   const stock = Number.isFinite(Number(product.stock)) ? Math.max(0, Math.floor(Number(product.stock))) : 1;
   const handle = generateHandle(title);
   const imageUrl = product.image_url || product.imageUrl || null;
@@ -106,11 +93,13 @@ export async function insertProductDraft(businessId, product) {
       ${stock},
       ${imageUrl}
     )
-    RETURNING id, business_id, name, price_kobo, status, image_url, created_at
+    RETURNING id, business_id, name, price_kobo, stock_quantity, status, image_url, created_at
   `;
 
   return {
-    ...row,
-    price: row.price_kobo / 100
+    id: row.id,
+    title: row.name,
+    price: row.price_kobo / 100,
+    stock: row.stock_quantity
   };
 }

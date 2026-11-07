@@ -28,7 +28,7 @@ function acquireInstanceLock() {
       if (prev && prev !== process.pid) {
         try {
           process.kill(prev, 0);
-          console.error(`[guard] another bot instance is running (pid ${prev}). Exit to avoid session 440.`);
+          console.error(`[guard] another bot instance is running (pid ${prev}). Exit.`);
           process.exit(1);
         } catch {}
       }
@@ -58,7 +58,7 @@ acquireInstanceLock();
 const healthServer = http.createServer((req, res) => {
   if (req.url === "/health" || req.url === "/") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ ok: true, service: "bazarhng-whatsapp-bot", pid: process.pid, uptime: Math.floor(process.uptime()) }));
+    res.end(JSON.stringify({ ok: true, service: "bazarhng-whatsapp-bot", pid: process.pid }));
     return;
   }
   res.writeHead(404);
@@ -123,7 +123,7 @@ async function startSock() {
         keys: makeCacheableSignalKeyStore(state.keys, logger),
       },
       logger,
-      printQRInTerminal: true,
+      printQRInTerminal: false,
       syncFullHistory: false,
       markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
@@ -134,41 +134,17 @@ async function startSock() {
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect, qr } = update;
-
-      if (qr) console.log("[wa] QR received — scan once; session persists in auth_info/");
-
+      const { connection, lastDisconnect } = update;
       if (connection === "open") {
         connecting = false;
         console.log("[wa] connected");
-        if (reconnectTimer) {
-          clearTimeout(reconnectTimer);
-          reconnectTimer = null;
-        }
+        if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       }
-
       if (connection === "close") {
         connecting = false;
-        const statusCode = lastDisconnect?.error instanceof Boom ? lastDisconnect.error.output?.statusCode : lastDisconnect?.error?.output?.statusCode || lastDisconnect?.error?.status || 0;
-        const loggedOut = statusCode === DisconnectReason.loggedOut;
-        console.log(`[wa] closed code=${statusCode} loggedOut=${loggedOut}`);
-
-        if (statusCode === 440) {
-          console.error("[wa] Status 440 session conflict. Reconnecting in 60s...");
-          if (!reconnectTimer) {
-            reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 60_000);
-          }
-          return;
-        }
-
-        if (loggedOut) {
-          console.error("[wa] logged out.");
-          return;
-        }
-
+        const statusCode = lastDisconnect?.error instanceof Boom ? lastDisconnect.error.output?.statusCode : 0;
         if (!reconnectTimer) {
-          const delay = statusCode === DisconnectReason.restartRequired ? 2_000 : 5_000;
-          reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, delay);
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 5_000);
         }
       }
     });
@@ -189,15 +165,20 @@ async function startSock() {
           if (!rawText && !hasImage) continue;
 
           const storeContext = await getStoreContextByPhone(senderPhone);
+          if (!storeContext) {
+            await sock.sendMessage(remoteJid, { text: "⚠️ No business store found linked to this WhatsApp number." });
+            continue;
+          }
+
           const result = await processUserMessage(rawText, hasImage, storeContext);
 
           if (result.intent === "ADD_PRODUCT") {
             const row = await insertProductDraft(storeContext.id, result.product);
-            const body = confirmationMessage({ title: row.title, price: row.price, stock: row.stock });
+            const body = confirmationMessage(row);
             await sock.sendMessage(remoteJid, { text: body });
             console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title}`);
           } else {
-            await sock.sendMessage(remoteJid, { text: result.reply || "How can I help your shop today?" });
+            await sock.sendMessage(remoteJid, { text: result.reply || `Hi from ${storeContext.name}! How can I help your shop today?` });
           }
         } catch (err) {
           console.error("[msg] handler error:", err.message || err);
@@ -211,7 +192,6 @@ async function startSock() {
     });
   } catch (err) {
     connecting = false;
-    console.error("[wa] startSock failed:", err.message || err);
     if (!reconnectTimer) {
       reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 10_000);
     }
