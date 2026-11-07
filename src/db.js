@@ -17,47 +17,19 @@ export function phoneSuffix(phone) {
   return digits.slice(-10);
 }
 
+function generateHandle(title) {
+  const base = String(title || "product")
+    .toLowerCase()
+    .replace(/[^\w\s-]/g, "")
+    .replace(/\s+/g, "-")
+    .slice(0, 50);
+  return `${base}-${Math.random().toString(36.slice(2, 7))}`;
+}
+
 export async function ensureSchema() {
-  // Ensure stores table exists
-  await sql`
-    CREATE TABLE IF NOT EXISTS stores (
-      id          SERIAL PRIMARY KEY,
-      name        TEXT NOT NULL DEFAULT 'My Shop',
-      phone       TEXT,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `;
-
-  // Ensure products table exists
-  await sql`
-    CREATE TABLE IF NOT EXISTS products (
-      id          SERIAL PRIMARY KEY,
-      store_id    INTEGER,
-      title       TEXT NOT NULL,
-      price       NUMERIC(12, 2) NOT NULL DEFAULT 0,
-      stock       INTEGER NOT NULL DEFAULT 1,
-      status      TEXT NOT NULL DEFAULT 'draft',
-      image_url   TEXT,
-      created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    )
-  `;
-
-  // Safely add columns if the table already existed without them
-  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER;`; } catch {}
-  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft';`; } catch {}
-  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;`; } catch {}
-  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INTEGER DEFAULT 1;`; } catch {}
-
-  const existingStores = await sql`SELECT id, name FROM stores ORDER BY id ASC LIMIT 1`;
-  if (existingStores.length === 0) {
-    await sql`
-      INSERT INTO stores (name, phone)
-      VALUES ('Default Shop', '2340000000000')
-    `;
-    console.log("[db] seeded default fallback store");
-  }
-
-  console.log("[db] schema ready & columns verified");
+  // Schema is managed by your main app, just verify connection
+  const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM businesses`;
+  console.log(`[db] connected successfully. Found ${count} businesses in DB.`);
 }
 
 export async function getStoreContextByPhone(phone) {
@@ -66,9 +38,9 @@ export async function getStoreContextByPhone(phone) {
     let rows = [];
     if (suffix.length >= 10) {
       rows = await sql`
-        SELECT id, name, phone
-        FROM stores
-        WHERE RIGHT(REGEXP_REPLACE(COALESCE(phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
+        SELECT id, business_name, owner_phone, whatsapp_phone
+        FROM businesses
+        WHERE RIGHT(REGEXP_REPLACE(COALESCE(owner_phone, whatsapp_phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
         ORDER BY id ASC
         LIMIT 1
       `;
@@ -76,49 +48,69 @@ export async function getStoreContextByPhone(phone) {
 
     if (!rows.length) {
       rows = await sql`
-        SELECT id, name, phone
-        FROM stores
+        SELECT id, business_name, owner_phone, whatsapp_phone
+        FROM businesses
         ORDER BY id ASC
         LIMIT 1
       `;
     }
 
-    let store = rows[0];
-    if (!store) {
-      const [created] = await sql`
-        INSERT INTO stores (name, phone)
-        VALUES ('Default Shop', ${phone || '2340000000000'})
-        RETURNING id, name, phone
-      `;
-      store = created;
+    const business = rows[0];
+    if (!business) {
+      throw new Error("No businesses found in the database.");
     }
 
-    return { id: store.id, name: store.name, phone: store.phone };
+    return { 
+      id: business.id, 
+      name: business.business_name, 
+      phone: business.owner_phone || business.whatsapp_phone 
+    };
   } catch (err) {
     console.error("[db] getStoreContextByPhone error:", err.message);
-    const [fallback] = await sql`SELECT id, name, phone FROM stores ORDER BY id ASC LIMIT 1`;
-    return fallback ? { id: fallback.id, name: fallback.name, phone: fallback.phone } : { id: 1, name: "Default Shop", phone: "" };
+    const [fallback] = await sql`SELECT id, business_name, owner_phone FROM businesses ORDER BY id ASC LIMIT 1`;
+    return fallback ? { id: fallback.id, name: fallback.business_name, phone: fallback.owner_phone } : null;
   }
 }
 
-export async function insertProductDraft(storeId, product) {
+export async function insertProductDraft(businessId, product) {
   const title = String(product.title || "Untitled item").trim().slice(0, 200);
-  const price = Number(product.price);
+  
+  // Convert Naira to kobo (integer) as required by price_kobo
+  const nairaPrice = Number(product.price) || 0;
+  const priceKobo = Math.round(nairaPrice * 100);
+
   const stock = Number.isFinite(Number(product.stock)) ? Math.max(0, Math.floor(Number(product.stock))) : 1;
+  const handle = generateHandle(title);
   const imageUrl = product.image_url || product.imageUrl || null;
 
   const [row] = await sql`
-    INSERT INTO products (store_id, title, price, stock, status, image_url)
+    INSERT INTO products (
+      business_id, 
+      name, 
+      handle, 
+      price_kobo, 
+      status, 
+      currency, 
+      sort_order, 
+      stock_quantity, 
+      image_url
+    )
     VALUES (
-      ${storeId},
+      ${businessId},
       ${title},
-      ${Number.isFinite(price) && price >= 0 ? price : 0},
-      ${stock},
+      ${handle},
+      ${priceKobo},
       'draft',
+      'NGN',
+      0,
+      ${stock},
       ${imageUrl}
     )
-    RETURNING id, store_id, title, price, stock, status, image_url, created_at
+    RETURNING id, business_id, name, price_kobo, status, image_url, created_at
   `;
 
-  return row;
+  return {
+    ...row,
+    price: row.price_kobo / 100 // convert back for confirmation text display
+  };
 }
