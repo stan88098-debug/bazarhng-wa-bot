@@ -30,11 +30,9 @@ export async function ensureSchema() {
 export async function getStoreContextByPhone(phone) {
   try {
     const clean = String(phone || "").replace(/\D/g, "");
-    // Extract last 10 digits to match the Nigerian local number
     const local10 = clean.slice(-10);
 
     if (local10.length === 10) {
-      // Look for any business matching the 10-digit suffix in owner_phone or whatsapp_phone
       const rows = await sql`
         SELECT id, business_name, owner_phone, whatsapp_phone
         FROM businesses
@@ -52,7 +50,6 @@ export async function getStoreContextByPhone(phone) {
       }
     }
 
-    // Fallback: If testing or LID doesn't match directly, target 'capalot' specifically if present, else first
     const [capalot] = await sql`
       SELECT id, business_name, owner_phone 
       FROM businesses 
@@ -79,6 +76,7 @@ export async function insertProductDraft(businessId, product) {
   const handle = generateHandle(title);
   const imageUrl = product.image_url || product.imageUrl || null;
 
+  // 1. Insert product record
   const [row] = await sql`
     INSERT INTO products (
       business_id, 
@@ -104,6 +102,20 @@ export async function insertProductDraft(businessId, product) {
     )
     RETURNING id, business_id, name, price_kobo, stock_quantity, status, image_url, created_at
   `;
+
+  // 2. Also insert into product_images table if an image URL exists so the dashboard UI renders it correctly
+  if (imageUrl && row?.id) {
+    try {
+      await sql`
+        INSERT INTO product_images (product_id, url, is_cover, sort_order)
+        VALUES (${row.id}, ${imageUrl}, true, 0)
+        ON CONFLICT DO NOTHING
+      `;
+      console.log(`[db] inserted image into product_images for product ${row.id}`);
+    } catch (err) {
+      console.error("[db] product_images insert note:", err.message);
+    }
+  }
 
   return {
     id: row.id,
