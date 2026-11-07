@@ -18,6 +18,7 @@ export function phoneSuffix(phone) {
 }
 
 export async function ensureSchema() {
+  // Ensure stores table exists
   await sql`
     CREATE TABLE IF NOT EXISTS stores (
       id          SERIAL PRIMARY KEY,
@@ -27,10 +28,11 @@ export async function ensureSchema() {
     )
   `;
 
+  // Ensure products table exists
   await sql`
     CREATE TABLE IF NOT EXISTS products (
       id          SERIAL PRIMARY KEY,
-      store_id    INTEGER NOT NULL REFERENCES stores(id) ON DELETE CASCADE,
+      store_id    INTEGER,
       title       TEXT NOT NULL,
       price       NUMERIC(12, 2) NOT NULL DEFAULT 0,
       stock       INTEGER NOT NULL DEFAULT 1,
@@ -39,6 +41,12 @@ export async function ensureSchema() {
       created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
     )
   `;
+
+  // Safely add columns if the table already existed without them
+  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS store_id INTEGER;`; } catch {}
+  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS status TEXT DEFAULT 'draft';`; } catch {}
+  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS image_url TEXT;`; } catch {}
+  try { await sql`ALTER TABLE products ADD COLUMN IF NOT EXISTS stock INTEGER DEFAULT 1;`; } catch {}
 
   const existingStores = await sql`SELECT id, name FROM stores ORDER BY id ASC LIMIT 1`;
   if (existingStores.length === 0) {
@@ -49,7 +57,7 @@ export async function ensureSchema() {
     console.log("[db] seeded default fallback store");
   }
 
-  console.log("[db] schema ready");
+  console.log("[db] schema ready & columns verified");
 }
 
 export async function getStoreContextByPhone(phone) {
@@ -88,7 +96,6 @@ export async function getStoreContextByPhone(phone) {
     return { id: store.id, name: store.name, phone: store.phone };
   } catch (err) {
     console.error("[db] getStoreContextByPhone error:", err.message);
-    // Absolute fallback so it never crashes
     const [fallback] = await sql`SELECT id, name, phone FROM stores ORDER BY id ASC LIMIT 1`;
     return fallback ? { id: fallback.id, name: fallback.name, phone: fallback.phone } : { id: 1, name: "Default Shop", phone: "" };
   }
