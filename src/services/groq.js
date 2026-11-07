@@ -1,19 +1,20 @@
 export async function processUserMessage(rawText, hasImage, storeContext, storeStats) {
   try {
     const apiKey = String(process.env.GROQ_API_KEY || "").trim();
-    const prompt = `You are an elite, all-in-one AI business partner and co-pilot for "${storeContext.name}", a store on the BazarhNG e-commerce platform in Nigeria.
-Address the store owner warmly. You possess live database data for this store:
+    const prompt = `You are an elite, all-in-one AI business partner and co-pilot for "${storeContext.name}", store ID ${storeContext.id}, on BazarhNG.
+Here is the LIVE database inventory data for this store right now:
 - Total Products in Database: ${storeStats.totalProducts}
 - Draft Items: ${storeStats.draftsCount}
 - Active Live Items: ${storeStats.activeCount}
-- Recent Inventory: ${JSON.stringify(storeStats.recentItems)}
+- Recent Items: ${JSON.stringify(storeStats.recentItems)}
 
 The store owner sent this message on WhatsApp: "${rawText}"
 ${hasImage ? "[The owner also attached a product photo]" : ""}
 
-Determine the owner's intent:
+Instructions:
 1. If they want to add/list a product (has product details/image), extract it as ADD_PRODUCT.
-2. If they are asking questions about their store inventory, stats, business advice, pricing, marketing, or general knowledge, answer it as CHAT using the live database stats provided above. Be direct, accurate, and helpful.
+2. If they ask about how many products they have, inventory counts, or store stats, YOU MUST use the exact numbers provided above in your reply. Do NOT tell them to log into the dashboard to check counts—you already have the live data right here!
+3. For any other questions, chat, or advice, reply as CHAT with a smart, helpful, and friendly tone.
 
 Return ONLY a valid JSON object with no markdown formatting:
 {
@@ -23,7 +24,7 @@ Return ONLY a valid JSON object with no markdown formatting:
     "price": number in Naira (e.g. 5000),
     "stock": number (default 1)
   },
-  "reply": "Your intelligent response using live store stats or product confirmation here."
+  "reply": "Your intelligent response using the exact live database numbers or product confirmation here."
 }`;
 
     const response = await fetch("https://api.groq.com/openai/v1/chat/completions", {
@@ -35,7 +36,7 @@ Return ONLY a valid JSON object with no markdown formatting:
       body: JSON.stringify({
         model: "openai/gpt-oss-120b",
         messages: [{ role: "user", content: prompt }],
-        temperature: 0.7,
+        temperature: 0.5,
         max_tokens: 1000
       })
     });

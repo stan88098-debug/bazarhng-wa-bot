@@ -54,6 +54,14 @@ process.on("exit", releaseInstanceLock);
 process.on("SIGINT", () => { releaseInstanceLock(); process.exit(0); });
 process.on("SIGTERM", () => { releaseInstanceLock(); process.exit(0); });
 
+process.on("unhandledRejection", (err) => {
+  console.error("[process] unhandled rejection caught:", err?.message || err);
+});
+
+process.on("uncaughtException", (err) => {
+  console.error("[process] uncaught exception caught:", err?.message || err);
+});
+
 acquireInstanceLock();
 
 const healthServer = http.createServer((req, res) => {
@@ -160,7 +168,7 @@ async function startSock() {
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", (update) => {
-      const { connection } = update;
+      const { connection, lastDisconnect } = update;
       if (connection === "open") {
         connecting = false;
         console.log("[wa] connected");
@@ -168,8 +176,10 @@ async function startSock() {
       }
       if (connection === "close") {
         connecting = false;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        console.log(`[wa] connection closed, statusCode: ${statusCode}`);
         if (!reconnectTimer) {
-          reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 5_000);
+          reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 3_000);
         }
       }
     });
@@ -197,9 +207,7 @@ async function startSock() {
             imageUrl = await uploadWhatsAppImageToCloudinary(msg);
           }
 
-          // Fetch live database stats for this store
           const storeStats = await getStoreStats(storeContext.id);
-
           const result = await processUserMessage(rawText, hasImage, storeContext, storeStats);
           console.log(`[ai] intent resolved for ${storeContext.name}: ${result.intent}`);
 
@@ -226,7 +234,7 @@ async function startSock() {
   } catch (err) {
     connecting = false;
     if (!reconnectTimer) {
-      reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 10_000);
+      reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 5_000);
     }
   }
 }
