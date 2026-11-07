@@ -6,7 +6,9 @@ import makeWASocket, {
   DisconnectReason,
   fetchLatestBaileysVersion,
   makeCacheableSignalKeyStore,
+  downloadMediaMessage,
 } from "@whiskeysockets/baileys";
+import { v2 as cloudinary } from "cloudinary";
 import pino from "pino";
 import { Boom } from "@hapi/boom";
 
@@ -16,6 +18,13 @@ import {
   insertProductDraft,
 } from "./src/db.js";
 import { processUserMessage } from "./src/services/groq.js";
+
+// Configure Cloudinary
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
 const AUTH_DIR = path.join(process.cwd(), "auth_info");
 const PORT = Number(process.env.PORT) || 10000;
@@ -100,6 +109,32 @@ function confirmationMessage(product) {
   );
 }
 
+async function uploadWhatsAppImageToCloudinary(msg) {
+  try {
+    const buffer = await downloadMediaMessage(
+      msg,
+      "buffer",
+      {},
+      { logger, reuploadRequest: sock => sock.updateMediaMessage }
+    );
+    if (!buffer) return null;
+
+    return new Promise((resolve, reject) => {
+      const uploadStream = cloudinary.uploader.upload_stream(
+        { folder: "bazarhng_products" },
+        (error, result) => {
+          if (error) reject(error);
+          else resolve(result?.secure_url || null);
+        }
+      );
+      uploadStream.end(buffer);
+    });
+  } catch (err) {
+    console.error("[cloudinary] upload error:", err.message);
+    return null;
+  }
+}
+
 let sock = null;
 let reconnectTimer = null;
 let connecting = false;
@@ -169,13 +204,25 @@ async function startSock() {
             continue;
           }
 
+          // 1. Upload image to Cloudinary if present
+          let imageUrl = null;
+          if (hasImage) {
+            console.log("[media] downloading and uploading product photo to Cloudinary...");
+            imageUrl = await uploadWhatsAppImageToCloudinary(msg);
+          }
+
           const result = await processUserMessage(rawText, hasImage, storeContext);
 
           if (result.intent === "ADD_PRODUCT") {
+            // Attach cloudinary image url to product object
+            if (imageUrl) {
+              result.product.image_url = imageUrl;
+            }
+
             const row = await insertProductDraft(storeContext.id, result.product);
             const body = confirmationMessage(row);
             await sock.sendMessage(remoteJid, { text: body });
-            console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title}`);
+            console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title} with image: ${imageUrl || 'none'}`);
           } else {
             await sock.sendMessage(remoteJid, { text: result.reply || `Hi from ${storeContext.name}! How can I help your shop today?` });
           }
