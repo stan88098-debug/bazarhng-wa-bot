@@ -174,7 +174,7 @@ async function startSock() {
     });
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-      if (type !== "notify") return;
+      console.log(`[wa] messages.upsert triggered, type: ${type}, count: ${messages?.length}`);
 
       for (const msg of messages) {
         try {
@@ -182,14 +182,17 @@ async function startSock() {
 
           const remoteJid = msg.key.remoteJid;
           const senderPhone = jidToPhone(remoteJid);
+          console.log(`[wa] incoming message from phone: ${senderPhone}, jid: ${remoteJid}`);
           if (!senderPhone) continue;
 
           const rawText = extractText(msg).trim();
           const hasImage = hasImageMessage(msg);
+          console.log(`[wa] text: "${rawText}", hasImage: ${hasImage}`);
           if (!rawText && !hasImage) continue;
 
           const storeContext = await getStoreContextByPhone(senderPhone);
           if (!storeContext) {
+            console.log(`[db] no store found for phone: ${senderPhone}`);
             await sock.sendMessage(remoteJid, { text: "⚠️ No business store found linked to this WhatsApp number." });
             continue;
           }
@@ -202,6 +205,7 @@ async function startSock() {
           }
 
           const result = await processUserMessage(rawText, hasImage, storeContext);
+          console.log(`[ai] intent resolved: ${result.intent}`);
 
           if (result.intent === "ADD_PRODUCT") {
             if (imageUrl) {
@@ -214,6 +218,7 @@ async function startSock() {
             console.log(`[product] draft #${row.id} for store ${storeContext.name}: ${row.title}`);
           } else {
             await sock.sendMessage(remoteJid, { text: result.reply || `Hello from ${storeContext.name}! How can I assist you today?` });
+            console.log(`[chat] replied to ${senderPhone}`);
           }
         } catch (err) {
           console.error("[msg] handler error:", err.message || err);
