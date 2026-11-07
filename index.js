@@ -142,7 +142,6 @@ async function startSock() {
       }
       if (connection === "close") {
         connecting = false;
-        const statusCode = lastDisconnect?.error instanceof Boom ? lastDisconnect.error.output?.statusCode : 0;
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 5_000);
         }

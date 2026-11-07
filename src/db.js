@@ -36,15 +36,17 @@ export async function getStoreContextByPhone(phone) {
   try {
     const suffix = phoneSuffix(phone);
     if (suffix.length >= 10) {
-      // Search exact match on owner_phone or whatsapp_phone suffix
+      // Use SQL LIKE wildcard matching against owner_phone and whatsapp_phone
+      const pattern = '%' + suffix;
       const rows = await sql`
         SELECT id, business_name, owner_phone, whatsapp_phone
         FROM businesses
-        WHERE RIGHT(REGEXP_REPLACE(COALESCE(owner_phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
-           OR RIGHT(REGEXP_REPLACE(COALESCE(whatsapp_phone, ''), '[^0-9]', '', 'g'), 10) = ${suffix}
+        WHERE owner_phone LIKE ${pattern}
+           OR whatsapp_phone LIKE ${pattern}
         LIMIT 1
       `;
       if (rows.length > 0) {
+        console.log(`✅ Matched phone ${phone} to business:`, rows[0].business_name);
         return { 
           id: rows[0].id, 
           name: rows[0].business_name, 
@@ -53,7 +55,7 @@ export async function getStoreContextByPhone(phone) {
       }
     }
 
-    // Fallback if no exact match found
+    console.log(`⚠️ No store match for phone ${phone}. Falling back to first store.`);
     const [fallback] = await sql`SELECT id, business_name, owner_phone FROM businesses ORDER BY id ASC LIMIT 1`;
     return fallback ? { id: fallback.id, name: fallback.business_name, phone: fallback.owner_phone } : null;
   } catch (err) {
