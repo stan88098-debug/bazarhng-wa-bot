@@ -128,12 +128,8 @@ async function uploadWhatsAppImageToCloudinary(msg) {
 
 let sock = null;
 let reconnectTimer = null;
-let connecting = false;
 
 async function startSock() {
-  if (connecting) return;
-  connecting = true;
-
   try {
     if (!fs.existsSync(AUTH_DIR)) {
       fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -151,7 +147,7 @@ async function startSock() {
       logger,
       printQRInTerminal: false,
       syncFullHistory: false,
-      markOnlineOnConnect: false,
+      markOnlineOnConnect: true,
       generateHighQualityLinkPreview: false,
       browser: ["BazarhNG", "Chrome", "1.0.0"],
       getMessage: async () => undefined,
@@ -160,21 +156,25 @@ async function startSock() {
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", (update) => {
-      const { connection } = update;
+      const { connection, lastDisconnect } = update;
       if (connection === "open") {
-        connecting = false;
-        console.log("[wa] connected");
+        console.log("[wa] connected successfully and stable");
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       }
       if (connection === "close") {
-        connecting = false;
+        const statusCode = lastDisconnect?.error?.output?.statusCode;
+        console.log(`[wa] connection closed, statusCode: ${statusCode}`);
         if (!reconnectTimer) {
-          reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 5_000);
+          reconnectTimer = setTimeout(() => {
+            reconnectTimer = null;
+            startSock();
+          }, 3_000);
         }
       }
     });
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
+      console.log(`[wa] messages.upsert triggered, type: ${type}, count: ${messages.length}`);
       for (const msg of messages) {
         try {
           const remoteJid = msg.key.remoteJid;
@@ -182,13 +182,18 @@ async function startSock() {
           if (remoteJid.includes("status") || remoteJid.includes("newsletter") || remoteJid.endsWith("@g.us")) continue;
 
           const senderPhone = jidToPhone(remoteJid);
+          console.log(`[wa] incoming private message from phone: ${senderPhone}, jid: ${remoteJid}`);
           if (!senderPhone) continue;
 
           const storeContext = await getStoreContextByPhone(senderPhone);
-          if (!storeContext) continue;
+          if (!storeContext) {
+            console.log(`[security] ignored message from unregistered phone: ${senderPhone}`);
+            continue;
+          }
 
           const rawText = extractText(msg).trim();
           const hasImage = hasImageMessage(msg);
+          console.log(`[wa] text: "${rawText}", hasImage: ${hasImage}`);
           if (!rawText && !hasImage) continue;
 
           let imageUrl = null;
@@ -222,9 +227,12 @@ async function startSock() {
       }
     });
   } catch (err) {
-    connecting = false;
+    console.error("[wa] startSock error:", err.message || err);
     if (!reconnectTimer) {
-      reconnectTimer = setTimeout(() => { reconnectTimer = null; startSock(); }, 10_000);
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null;
+        startSock();
+      }, 5_000);
     }
   }
 }
