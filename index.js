@@ -158,21 +158,7 @@ async function startSock() {
 
     sock.ev.on("creds.update", saveCreds);
 
-    // Request pairing code if not already registered
-    if (!sock.authState.creds.registered) {
-      setTimeout(async () => {
-        try {
-          const code = await sock.requestPairingCode(PAIRING_NUMBER);
-          console.log(`\n========================================`);
-          console.log(`PAIRING CODE FOR ${PAIRING_NUMBER}: ${code}`);
-          console.log(`========================================\n`);
-        } catch (err) {
-          console.error("[pairing] error requesting code:", err.message);
-        }
-      }, 4000);
-    }
-
-    sock.ev.on("connection.update", (update) => {
+    sock.ev.on("connection.update", async (update) => {
       const { connection, lastDisconnect } = update;
       
       if (connection === "open") {
@@ -187,7 +173,7 @@ async function startSock() {
         console.log(`[wa] connection closed, statusCode: ${statusCode}`);
 
         if (statusCode === DisconnectReason.loggedOut) {
-          console.log("[wa] logged out by WhatsApp. Clear auth_info to re-pair.");
+          console.log("[wa] logged out by WhatsApp.");
           return;
         }
 
@@ -199,6 +185,21 @@ async function startSock() {
         }
       }
     });
+
+    // Request pairing code only after socket is initialized and if not registered
+    if (!sock.authState.creds.registered) {
+      setTimeout(async () => {
+        try {
+          console.log("[pairing] requesting pairing code...");
+          const code = await sock.requestPairingCode(PAIRING_NUMBER);
+          console.log(`\n========================================`);
+          console.log(`PAIRING CODE FOR ${PAIRING_NUMBER}: ${code}`);
+          console.log(`========================================\n`);
+        } catch (err) {
+          console.error("[pairing] error requesting code:", err.message);
+        }
+      }, 6000);
+    }
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
       for (const msg of messages) {
