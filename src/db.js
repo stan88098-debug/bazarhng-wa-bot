@@ -23,11 +23,11 @@ function generateHandle(title) {
     .replace(/[^\w\s-]/g, "")
     .replace(/\s+/g, "-")
     .slice(0, 50);
-  return `${base}-${Math.random().toString(36.slice(2, 7))}`;
+  const rand = Math.random().toString(36).substring(2, 7);
+  return `${base}-${rand}`;
 }
 
 export async function ensureSchema() {
-  // Schema is managed by your main app, just verify connection
   const [{ count }] = await sql`SELECT COUNT(*)::int AS count FROM businesses`;
   console.log(`[db] connected successfully. Found ${count} businesses in DB.`);
 }
@@ -111,6 +111,6 @@ export async function insertProductDraft(businessId, product) {
 
   return {
     ...row,
-    price: row.price_kobo / 100 // convert back for confirmation text display
+    price: row.price_kobo / 100
   };
 }
