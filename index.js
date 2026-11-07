@@ -28,17 +28,18 @@ cloudinary.config({
 const AUTH_DIR = path.join(process.cwd(), "auth_info");
 const PORT = Number(process.env.PORT) || 10000;
 const LOCK_FILE = path.join(process.cwd(), ".bot.instance.lock");
+const PAIRING_NUMBER = "2347066568228";
 
 function acquireInstanceLock() {
   try {
     if (fs.existsSync(LOCK_FILE)) {
       const prev = Number(fs.readFileSync(LOCK_FILE, "utf8").trim());
       if (prev && prev !== process.pid) {
-        try { process.kill(prev, 0); process.exit(1); } catch {}
+        try { process.kill(prev, 0); } catch {}
       }
     }
     fs.writeFileSync(LOCK_FILE, String(process.pid), "utf8");
-  } catch (err) { process.exit(1); }
+  } catch (err) {}
 }
 
 function releaseInstanceLock() {
@@ -113,12 +114,10 @@ async function uploadWhatsAppImageToCloudinary(msg) {
     if (!buffer) return null;
 
     const base64Data = `data:image/jpeg;base64,${buffer.toString("base64")}`;
-    
     const result = await cloudinary.uploader.upload(base64Data, {
       folder: "bazarhng_products",
       resource_type: "auto"
     });
-
     return result?.secure_url || null;
   } catch (err) {
     console.error("[cloudinary] upload error:", err.message);
@@ -128,8 +127,12 @@ async function uploadWhatsAppImageToCloudinary(msg) {
 
 let sock = null;
 let reconnectTimer = null;
+let connecting = false;
 
 async function startSock() {
+  if (connecting) return;
+  connecting = true;
+
   try {
     if (!fs.existsSync(AUTH_DIR)) {
       fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -147,34 +150,57 @@ async function startSock() {
       logger,
       printQRInTerminal: false,
       syncFullHistory: false,
-      markOnlineOnConnect: true,
+      markOnlineOnConnect: false,
       generateHighQualityLinkPreview: false,
-      browser: ["BazarhNG", "Chrome", "1.0.0"],
+      browser: ["Chrome (Linux)", "Chrome", "120.0.0.0"],
       getMessage: async () => undefined,
     });
 
     sock.ev.on("creds.update", saveCreds);
 
+    // Request pairing code if not already registered
+    if (!sock.authState.creds.registered) {
+      setTimeout(async () => {
+        try {
+          const code = await sock.requestPairingCode(PAIRING_NUMBER);
+          console.log(`\n========================================`);
+          console.log(`PAIRING CODE FOR ${PAIRING_NUMBER}: ${code}`);
+          console.log(`========================================\n`);
+        } catch (err) {
+          console.error("[pairing] error requesting code:", err.message);
+        }
+      }, 4000);
+    }
+
     sock.ev.on("connection.update", (update) => {
       const { connection, lastDisconnect } = update;
+      
       if (connection === "open") {
-        console.log("[wa] connected successfully and stable");
+        connecting = false;
+        console.log("[wa] connected successfully and session saved permanently");
         if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
       }
+
       if (connection === "close") {
+        connecting = false;
         const statusCode = lastDisconnect?.error?.output?.statusCode;
         console.log(`[wa] connection closed, statusCode: ${statusCode}`);
+
+        if (statusCode === DisconnectReason.loggedOut) {
+          console.log("[wa] logged out by WhatsApp. Clear auth_info to re-pair.");
+          return;
+        }
+
         if (!reconnectTimer) {
           reconnectTimer = setTimeout(() => {
             reconnectTimer = null;
             startSock();
-          }, 3_000);
+          }, 5_000);
         }
       }
     });
 
     sock.ev.on("messages.upsert", async ({ messages, type }) => {
-      console.log(`[wa] messages.upsert triggered, type: ${type}, count: ${messages.length}`);
       for (const msg of messages) {
         try {
           const remoteJid = msg.key.remoteJid;
@@ -182,23 +208,18 @@ async function startSock() {
           if (remoteJid.includes("status") || remoteJid.includes("newsletter") || remoteJid.endsWith("@g.us")) continue;
 
           const senderPhone = jidToPhone(remoteJid);
-          console.log(`[wa] incoming private message from phone: ${senderPhone}, jid: ${remoteJid}`);
           if (!senderPhone) continue;
 
           const storeContext = await getStoreContextByPhone(senderPhone);
-          if (!storeContext) {
-            console.log(`[security] ignored message from unregistered phone: ${senderPhone}`);
-            continue;
-          }
+          if (!storeContext) continue;
 
           const rawText = extractText(msg).trim();
           const hasImage = hasImageMessage(msg);
-          console.log(`[wa] text: "${rawText}", hasImage: ${hasImage}`);
           if (!rawText && !hasImage) continue;
 
           let imageUrl = null;
           if (hasImage) {
-            console.log("[media] downloading and uploading product photo to Cloudinary...");
+            console.log("[media] uploading product photo to Cloudinary...");
             imageUrl = await uploadWhatsAppImageToCloudinary(msg);
           }
 
@@ -227,12 +248,13 @@ async function startSock() {
       }
     });
   } catch (err) {
-    console.error("[wa] startSock error:", err.message || err);
+    connecting = false;
+    console.error("[wa] startSock catch error:", err.message);
     if (!reconnectTimer) {
       reconnectTimer = setTimeout(() => {
         reconnectTimer = null;
         startSock();
-      }, 5_000);
+      }, 10_000);
     }
   }
 }
