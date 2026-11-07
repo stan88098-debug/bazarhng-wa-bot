@@ -19,11 +19,11 @@ import {
 } from "./src/db.js";
 import { processUserMessage } from "./src/services/groq.js";
 
-// Configure Cloudinary
+// Clean config and strip any accidental whitespace from credentials
 cloudinary.config({
-  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
-  api_key: process.env.CLOUDINARY_API_KEY,
-  api_secret: process.env.CLOUDINARY_API_SECRET,
+  cloud_name: String(process.env.CLOUDINARY_CLOUD_NAME || "").trim(),
+  api_key: String(process.env.CLOUDINARY_API_KEY || "").trim(),
+  api_secret: String(process.env.CLOUDINARY_API_SECRET || "").trim(),
 });
 
 const AUTH_DIR = path.join(process.cwd(), "auth_info");
@@ -119,18 +119,22 @@ async function uploadWhatsAppImageToCloudinary(msg) {
     );
     if (!buffer) return null;
 
-    return new Promise((resolve, reject) => {
+    return new Promise((resolve) => {
       const uploadStream = cloudinary.uploader.upload_stream(
         { folder: "bazarhng_products" },
         (error, result) => {
-          if (error) reject(error);
-          else resolve(result?.secure_url || null);
+          if (error) {
+            console.error("[cloudinary] upload failed, proceeding without image:", error.message);
+            resolve(null);
+          } else {
+            resolve(result?.secure_url || null);
+          }
         }
       );
       uploadStream.end(buffer);
     });
   } catch (err) {
-    console.error("[cloudinary] upload error:", err.message);
+    console.error("[cloudinary] download/upload error:", err.message);
     return null;
   }
 }
@@ -204,7 +208,6 @@ async function startSock() {
             continue;
           }
 
-          // 1. Upload image to Cloudinary if present
           let imageUrl = null;
           if (hasImage) {
             console.log("[media] downloading and uploading product photo to Cloudinary...");
@@ -214,7 +217,6 @@ async function startSock() {
           const result = await processUserMessage(rawText, hasImage, storeContext);
 
           if (result.intent === "ADD_PRODUCT") {
-            // Attach cloudinary image url to product object
             if (imageUrl) {
               result.product.image_url = imageUrl;
             }
@@ -222,7 +224,7 @@ async function startSock() {
             const row = await insertProductDraft(storeContext.id, result.product);
             const body = confirmationMessage(row);
             await sock.sendMessage(remoteJid, { text: body });
-            console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title} with image: ${imageUrl || 'none'}`);
+            console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title}`);
           } else {
             await sock.sendMessage(remoteJid, { text: result.reply || `Hi from ${storeContext.name}! How can I help your shop today?` });
           }
