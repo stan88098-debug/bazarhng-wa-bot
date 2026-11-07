@@ -1,22 +1,17 @@
 {
   "name": "bazarhng-whatsapp-bot",
   "version": "1.0.0",
-  "private": true,
+  "description": "WhatsApp AI bot for BazarhNG",
   "main": "index.js",
   "type": "module",
   "scripts": {
-    "start": "node index.js",
-    "dev": "node index.js"
-  },
-  "engines": {
-    "node": ">=18"
+    "start": "node index.js"
   },
   "dependencies": {
-    "@hapi/boom": "^10.0.1",
-    "@whiskeysockets/baileys": "^6.7.16",
+    "@whiskeysockets/baileys": "^6.7.13",
     "cloudinary": "^2.5.1",
-    "groq-sdk": "^0.9.0",
-    "pino": "^9.6.0",
-    "postgres": "^3.4.5"
+    "groq-sdk": "^0.9.1",
+    "pg": "^8.13.0",
+    "pino": "^9.5.0"
   }
 }
