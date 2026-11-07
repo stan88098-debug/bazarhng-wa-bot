@@ -76,7 +76,7 @@ export async function insertProductDraft(businessId, product) {
   const handle = generateHandle(title);
   const imageUrl = product.image_url || product.imageUrl || null;
 
-  // 1. Insert product record
+  // 1. Insert into products table (including image_url)
   const [row] = await sql`
     INSERT INTO products (
       business_id, 
@@ -103,17 +103,16 @@ export async function insertProductDraft(businessId, product) {
     RETURNING id, business_id, name, price_kobo, stock_quantity, status, image_url, created_at
   `;
 
-  // 2. Also insert into product_images table if an image URL exists so the dashboard UI renders it correctly
+  // 2. Insert into product_images table using your exact table columns (product_id, url, sort_order)
   if (imageUrl && row?.id) {
     try {
       await sql`
-        INSERT INTO product_images (product_id, url, is_cover, sort_order)
-        VALUES (${row.id}, ${imageUrl}, true, 0)
-        ON CONFLICT DO NOTHING
+        INSERT INTO product_images (product_id, url, sort_order)
+        VALUES (${row.id}, ${imageUrl}, 0)
       `;
-      console.log(`[db] inserted image into product_images for product ${row.id}`);
+      console.log(`[db] successfully inserted image into product_images for product ${row.id}`);
     } catch (err) {
-      console.error("[db] product_images insert note:", err.message);
+      console.error("[db] product_images insert error:", err.message);
     }
   }
 
