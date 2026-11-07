@@ -76,7 +76,7 @@ export async function insertProductDraft(businessId, product) {
   const handle = generateHandle(title);
   const imageUrl = product.image_url || product.imageUrl || null;
 
-  // 1. Insert product record
+  // 1. Insert product with lowercase 'draft' status enum requirement
   const [row] = await sql`
     INSERT INTO products (
       business_id, 
@@ -103,10 +103,9 @@ export async function insertProductDraft(businessId, product) {
     RETURNING id, business_id, name, price_kobo, stock_quantity, status, image_url, created_at
   `;
 
-  // 2. Insert into product_images with extracted public_id to satisfy the NOT NULL constraint
+  // 2. Insert into product_images table so the frontend query map finds the image URL
   if (imageUrl && row?.id) {
     try {
-      // Extract public_id from Cloudinary URL (e.g. "bazarhng_products/bjwajpo2hc18ibdvp1si")
       let publicId = "bazarhng_products/prod_" + row.id;
       try {
         const parts = imageUrl.split("/");
@@ -122,7 +121,7 @@ export async function insertProductDraft(businessId, product) {
         INSERT INTO product_images (product_id, cloudinary_public_id, url, sort_order)
         VALUES (${row.id}, ${publicId}, ${imageUrl}, 0)
       `;
-      console.log(`[db] successfully inserted into product_images for product ${row.id} with public_id: ${publicId}`);
+      console.log(`[db] successfully linked image in product_images for product ${row.id}`);
     } catch (err) {
       console.error("[db] product_images insert error:", err.message);
     }
