@@ -34,16 +34,11 @@ function acquireInstanceLock() {
     if (fs.existsSync(LOCK_FILE)) {
       const prev = Number(fs.readFileSync(LOCK_FILE, "utf8").trim());
       if (prev && prev !== process.pid) {
-        try {
-          process.kill(prev, 0);
-          process.exit(1);
-        } catch {}
+        try { process.kill(prev, 0); process.exit(1); } catch {}
       }
     }
     fs.writeFileSync(LOCK_FILE, String(process.pid), "utf8");
-  } catch (err) {
-    process.exit(1);
-  }
+  } catch (err) { process.exit(1); }
 }
 
 function releaseInstanceLock() {
@@ -125,7 +120,7 @@ async function uploadWhatsAppImageToCloudinary(msg) {
 
     return result?.secure_url || null;
   } catch (err) {
-    console.error("[cloudinary] direct upload error:", err.message);
+    console.error("[cloudinary] upload error:", err.message);
     return null;
   }
 }
