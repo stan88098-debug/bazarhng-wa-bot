@@ -19,7 +19,6 @@ import {
 } from "./src/db.js";
 import { processUserMessage } from "./src/services/groq.js";
 
-// Clean config and strip any accidental whitespace from credentials
 cloudinary.config({
   cloud_name: String(process.env.CLOUDINARY_CLOUD_NAME || "").trim(),
   api_key: String(process.env.CLOUDINARY_API_KEY || "").trim(),
@@ -37,14 +36,12 @@ function acquireInstanceLock() {
       if (prev && prev !== process.pid) {
         try {
           process.kill(prev, 0);
-          console.error(`[guard] another bot instance is running (pid ${prev}). Exit.`);
           process.exit(1);
         } catch {}
       }
     }
     fs.writeFileSync(LOCK_FILE, String(process.pid), "utf8");
   } catch (err) {
-    console.error("[guard] lock failed:", err.message);
     process.exit(1);
   }
 }
@@ -119,22 +116,16 @@ async function uploadWhatsAppImageToCloudinary(msg) {
     );
     if (!buffer) return null;
 
-    return new Promise((resolve) => {
-      const uploadStream = cloudinary.uploader.upload_stream(
-        { folder: "bazarhng_products" },
-        (error, result) => {
-          if (error) {
-            console.error("[cloudinary] upload failed, proceeding without image:", error.message);
-            resolve(null);
-          } else {
-            resolve(result?.secure_url || null);
-          }
-        }
-      );
-      uploadStream.end(buffer);
+    const base64Data = `data:image/jpeg;base64,${buffer.toString("base64")}`;
+    
+    const result = await cloudinary.uploader.upload(base64Data, {
+      folder: "bazarhng_products",
+      resource_type: "auto"
     });
+
+    return result?.secure_url || null;
   } catch (err) {
-    console.error("[cloudinary] download/upload error:", err.message);
+    console.error("[cloudinary] direct upload error:", err.message);
     return null;
   }
 }
@@ -173,7 +164,7 @@ async function startSock() {
     sock.ev.on("creds.update", saveCreds);
 
     sock.ev.on("connection.update", (update) => {
-      const { connection, lastDisconnect } = update;
+      const { connection } = update;
       if (connection === "open") {
         connecting = false;
         console.log("[wa] connected");
@@ -212,6 +203,7 @@ async function startSock() {
           if (hasImage) {
             console.log("[media] downloading and uploading product photo to Cloudinary...");
             imageUrl = await uploadWhatsAppImageToCloudinary(msg);
+            console.log("[media] upload result URL:", imageUrl);
           }
 
           const result = await processUserMessage(rawText, hasImage, storeContext);
@@ -224,7 +216,7 @@ async function startSock() {
             const row = await insertProductDraft(storeContext.id, result.product);
             const body = confirmationMessage(row);
             await sock.sendMessage(remoteJid, { text: body });
-            console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title}`);
+            console.log(`[product] draft #${row.id} for store ${storeContext.id}: ${row.title} with image: ${imageUrl || 'none'}`);
           } else {
             await sock.sendMessage(remoteJid, { text: result.reply || `Hi from ${storeContext.name}! How can I help your shop today?` });
           }
