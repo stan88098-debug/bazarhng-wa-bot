@@ -14,19 +14,26 @@ import { runAgent, describeImage, transcribe } from './ai.js';
 import { uploadProductImage } from './media.js';
 import { createToolbox, toolDefs } from './tools.js';
 import { t } from './i18n.js';
-import { detectLang, clip } from './util.js';
+import { detectLang, clip, lagosNow } from './util.js';
+import { SITE } from './config.js';
 
 const AUTH_DIR = 'auth_info';
-const SITE = 'https://bazarhng.netlify.app';
 const PAIRING_NUMBER = (process.env.PAIRING_NUMBER || '2347066568228').replace(/\D/g, '');
 const MAX_ATTEMPTS = 8;
 const MAX_PHOTOS = 6;
 const PHOTO_TTL = 15 * 60 * 1000;
 const RATE_LIMIT = 20; // messages per minute per vendor
+const DAILY_LIMIT = Number(process.env.DAILY_AI_LIMIT) || 200; // messages per vendor per day (protects the Groq quota)
 const log = pino({ level: process.env.LOG_LEVEL || 'info' });
 
 let attempts = 0;
 let stopped = false;
+const startedAt = Date.now();
+let connected = false;
+let currentSock = null;
+let lastMessageAt = null;
+let schedulerStarted = false;
+let digestBusy = false;
 const rejected = new Map(); // phone -> last rejection time
 const seen = new Set();     // message id dedupe
 const states = new Map();   // phone -> per-vendor working state
@@ -114,6 +121,15 @@ async function ensureHistory(st, phone) {
   try { st.history = await db.loadChat(phone); } catch { st.history = []; }
 }
 
+const promptCtx = (biz, st, photos) => ({
+  now: new Date().toLocaleString('en-NG', { timeZone: 'Africa/Lagos', dateStyle: 'full', timeStyle: 'short' }),
+  storeUrl: storeUrl(biz),
+  siteUrl: SITE,
+  photos,
+  lastTouched: st.lastTouched,
+  pending: st.pending && st.pending.expires > Date.now() ? st.pending : null,
+});
+
 // ---------- one conversation turn ----------
 async function runTurn({ sock, jid, biz, phone, text, heard = null, noteForHistory = null }) {
   const st = getState(phone);
@@ -129,7 +145,7 @@ async function runTurn({ sock, jid, biz, phone, text, heard = null, noteForHisto
 
   const stats = await db.getStoreStats(biz.id);
   st.turn += 1;
-  const ctx = { biz, st, turn: st.turn, cards: [] };
+  const ctx = { biz, phone, st, turn: st.turn, cards: [] };
 
   let reply = '';
   try {
@@ -140,14 +156,7 @@ async function runTurn({ sock, jid, biz, phone, text, heard = null, noteForHisto
       history: st.history,
       tools: toolDefs({ hasOrders: db.hasOrders() }),
       execTool: (name, args) => toolbox.exec(name, args, ctx),
-      ctx: {
-        now: new Date().toLocaleString('en-NG', { timeZone: 'Africa/Lagos', dateStyle: 'full', timeStyle: 'short' }),
-        storeUrl: storeUrl(biz),
-        siteUrl: SITE,
-        photos,
-        lastTouched: st.lastTouched,
-        pending: st.pending && st.pending.expires > Date.now() ? st.pending : null,
-      },
+      ctx: promptCtx(biz, st, photos),
     });
   } catch (e) {
     log.error({ err: e.message }, 'AI failed');
@@ -207,6 +216,14 @@ async function handleMessage(sock, m) {
   st.hits.push(now);
   if (st.hits.length > RATE_LIMIT) {
     if (now - st.warnedAt > 60000) { st.warnedAt = now; await send(t(st.lang, 'rateLimited')); }
+    return;
+  }
+
+  lastMessageAt = Date.now();
+  const day = lagosNow().date;
+  if (st.dayKey !== day) { st.dayKey = day; st.dayCount = 0; st.limitWarned = false; }
+  if (++st.dayCount > DAILY_LIMIT) {
+    if (!st.limitWarned) { st.limitWarned = true; await send(t(st.lang, 'dailyLimit')); }
     return;
   }
 
@@ -270,9 +287,68 @@ async function handleMessage(sock, m) {
   });
 }
 
+// ---------- optional morning summary (only for vendors who asked for it) ----------
+async function sendDigest(sock, phone) {
+  const biz = await db.getBusinessByPhone(phone);
+  if (!biz || !biz.is_active) return;
+  const st = getState(phone);
+  await ensureHistory(st, phone);
+
+  const all = await db.getAllProducts(biz.id);
+  const ov = db.hasOrders() ? await db.ordersOverview(biz.id, 1).catch(() => null) : null;
+  const drafts = all.filter((p) => p.status === 'draft').length;
+  const low = all.filter((p) => (p.status === 'active' || p.status === 'out_of_stock') && p.stock_quantity != null && p.stock_quantity <= 2).length;
+  if (!drafts && !low && !(ov?.open_orders_now) && !(ov?.orders)) return; // nothing to report: stay quiet
+
+  const stats = await db.getStoreStats(biz.id);
+  st.turn += 1;
+  const ctx = { biz, phone, st, turn: st.turn, cards: [] };
+  const reply = await runAgent({
+    text: "(AUTOMATIC DAILY SUMMARY) Write the vendor's morning summary now.",
+    biz,
+    stats,
+    history: st.history,
+    tools: toolDefs({ hasOrders: db.hasOrders() }),
+    execTool: (name, args) => toolbox.exec(name, args, ctx),
+    ctx: promptCtx(biz, st, []),
+  });
+  const msg = reply.trim();
+  if (!msg) return;
+  await sock.sendMessage(`${phone}@s.whatsapp.net`, { text: msg });
+  st.history.push({ role: 'user', content: '[automatic daily summary]' }, { role: 'assistant', content: clip(msg, 1500) });
+  st.history = st.history.slice(-16);
+  db.saveChat(phone, st.history).catch(() => {});
+}
+
+async function digestTick() {
+  if (!currentSock || digestBusy) return;
+  digestBusy = true;
+  try {
+    const { date, hour } = lagosNow();
+    for (const phone of await db.listDigestSubscribers(hour)) {
+      if (!currentSock) break;
+      if (!(await db.claimJob(`digest-${phone}-${date}`))) continue; // already sent today
+      try { await sendDigest(currentSock, phone); } catch (e) { log.warn({ err: e.message }, 'Daily summary failed'); }
+      await sleep(4000);
+    }
+  } catch (e) {
+    log.warn({ err: e.message }, 'Summary check failed');
+  } finally {
+    digestBusy = false;
+  }
+}
+
+export function getStatus() {
+  return { connected, uptime_min: Math.round((Date.now() - startedAt) / 60000), last_message_min_ago: lastMessageAt ? Math.round((Date.now() - lastMessageAt) / 60000) : null };
+}
+
 // ---------- connection ----------
 export async function startWhatsApp() {
   if (stopped) return;
+  if (!schedulerStarted) {
+    schedulerStarted = true;
+    setInterval(() => { digestTick().catch(() => {}); }, 10 * 60 * 1000).unref();
+  }
   await restoreSession();
 
   const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
@@ -308,11 +384,15 @@ export async function startWhatsApp() {
 
   sock.ev.on('connection.update', async ({ connection, lastDisconnect }) => {
     if (connection === 'open') {
+      connected = true;
+      currentSock = sock;
       attempts = 0;
       log.info('WhatsApp connected');
       scheduleSessionSync();
     }
     if (connection !== 'close') return;
+    connected = false;
+    if (currentSock === sock) currentSock = null;
 
     const code = lastDisconnect?.error?.output?.statusCode;
     log.warn(`Connection closed (code ${code})`);

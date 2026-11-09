@@ -113,3 +113,10 @@ export function detectLang(text) {
   const [lang, best] = Object.entries(score).sort((a, b) => b[1] - a[1])[0];
   return best >= 1 ? lang : 'en';
 }
+
+// Lagos has no daylight saving: always UTC+1. Returns { date: 'YYYY-MM-DD', hour: 0-23, weekday: 0-6 (Sun=0) }
+export function lagosNow(d = new Date()) {
+  const l = new Date(d.getTime() + 3600 * 1000);
+  const p2 = (n) => String(n).padStart(2, '0');
+  return { date: `${l.getUTCFullYear()}-${p2(l.getUTCMonth() + 1)}-${p2(l.getUTCDate())}`, hour: l.getUTCHours(), weekday: l.getUTCDay() };
+}

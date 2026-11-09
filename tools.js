@@ -2,6 +2,7 @@ import { naira, parseMoney, parseCount, resolveProduct, similarity, roundPrice, 
 
 const STATUS = { draft: '📝 Draft (hidden)', active: '🟢 Live', out_of_stock: '🔴 Out of stock', archived: '🗄 Archived' };
 const PENDING_TTL = 5 * 60 * 1000;
+const fmtStock = (n) => (n == null ? 'not tracked' : String(n));
 
 const fn = (name, description, properties = {}, required = []) => ({
   type: 'function',
@@ -38,6 +39,14 @@ export function toolDefs({ hasOrders = false } = {}) {
     fn('attach_photos', 'Attach the waiting photos to an existing product (add to gallery, or replace).', {
       product: P, replace: { type: 'boolean', description: 'true to replace existing photos' },
     }, ['product']),
+    fn('set_sale', 'Put ONE product on sale: the old price shows crossed out with a discount badge. Give percent_off OR sale_price.', {
+      product: P,
+      percent_off: { type: 'number', description: 'e.g. 20 for 20% off' },
+      sale_price: { type: 'number', description: 'The new lower price in Naira' },
+    }, ['product']),
+    fn('end_sale', 'End a sale: the price goes back to normal. Give a product, or all=true for every product on sale (asks for confirmation).', {
+      product: P, all: { type: 'boolean' },
+    }),
     fn('delete_product', 'Permanently delete a product. TWO-STEP: this only asks for confirmation.', { product: P }, ['product']),
     fn('bulk_price_change', 'Raise or lower prices by a percentage (e.g. -10 for 10% off). TWO-STEP: this only previews and asks for confirmation.', {
       percent: { type: 'number', description: 'Positive to increase, negative to discount' },
@@ -47,24 +56,41 @@ export function toolDefs({ hasOrders = false } = {}) {
     fn('confirm_pending_action', 'Run the pending delete/bulk price change after the vendor said yes in a NEW message.'),
     fn('cancel_pending_action', 'Drop the pending action because the vendor said no.'),
     fn('get_store_stats', 'Counts, inventory value, low stock and products without photos.'),
+    fn('set_daily_summary', 'Turn the vendor\'s optional morning WhatsApp summary on or off (drafts waiting, low stock, new orders). It is off by default.', {
+      enabled: { type: 'boolean' },
+      hour: { type: 'integer', description: 'Hour of the day in Lagos time, 5 to 21. Default 8.' },
+    }, ['enabled']),
   ];
   if (hasOrders) {
-    defs.push(fn('recent_orders', 'Recent orders for this store and a count by status.', { limit: { type: 'integer' } }));
+    defs.push(fn('recent_orders', 'The latest orders with customer, items, total and status.', { limit: { type: 'integer' } }));
+    defs.push(fn('orders_overview', 'Sales for the last N days: number of orders, revenue, orders by status, orders waiting for the vendor and best sellers.', {
+      days: { type: 'integer', description: 'Default 7' },
+    }));
   }
   return defs;
 }
 
 export function createToolbox({ db, media, siteUrl, log }) {
   const storeUrl = (biz) => `${siteUrl}/store/${biz.slug}`;
-  const brief = (p) => ({ id: p.id, name: p.name, price: p.price_kobo / 100, stock: p.stock_quantity, status: p.status });
+  const onSaleNow = (p) => p.compare_at_price_kobo != null && p.compare_at_price_kobo > p.price_kobo;
+  const brief = (p) => ({
+    id: p.id, name: p.name, price: p.price_kobo / 100, stock: p.stock_quantity, status: p.status,
+    ...(onSaleNow(p) ? { was_price: p.compare_at_price_kobo / 100, on_sale: true } : {}),
+  });
 
   function card(p, biz, o = {}) {
-    const price =
+    let price =
       o.beforePrice != null && o.beforePrice !== p.price_kobo
         ? `${naira(o.beforePrice / 100)} ➜ ${naira(p.price_kobo / 100)}`
         : naira(p.price_kobo / 100);
+    if (onSaleNow(p)) {
+      const pctOff = Math.round((1 - p.price_kobo / p.compare_at_price_kobo) * 100);
+      price += ` (was ${naira(p.compare_at_price_kobo / 100)}, -${pctOff}%)`;
+    }
     const stock =
-      o.beforeStock != null && o.beforeStock !== p.stock_quantity ? `${o.beforeStock} ➜ ${p.stock_quantity}` : `${p.stock_quantity}`;
+      o.beforeStock !== undefined && o.beforeStock !== p.stock_quantity
+        ? `${fmtStock(o.beforeStock)} ➜ ${fmtStock(p.stock_quantity)}`
+        : fmtStock(p.stock_quantity);
     return [
       `📦 ${p.name}`,
       `💰 ${price}`,
@@ -75,14 +101,22 @@ export function createToolbox({ db, media, siteUrl, log }) {
     ].filter(Boolean).join('\n');
   }
 
-  async function pick(biz, ref) {
+  async function pick(biz, ref, ctx) {
     const all = await db.getAllProducts(biz.id);
+    // "2" after a numbered list means the 2nd product we just listed
+    const raw = String(ref ?? '').trim();
+    const last = ctx?.st?.lastChoices;
+    if (/^\d{1,2}$/.test(raw) && last && Date.now() - last.ts < 10 * 60 * 1000) {
+      const hit = all.find((p) => p.id === last.ids[Number(raw) - 1]);
+      if (hit) return { product: hit, all };
+    }
     const r = resolveProduct(all, ref);
     if (r.type === 'one') return { product: r.product, all };
     if (r.type === 'unsure') {
       return { reply: { status: 'unsure_match', suggestion: brief(r.product), message: `No exact match for "${ref}". Closest is "${r.product.name}". Ask the vendor if they mean that one.` } };
     }
     if (r.type === 'many') {
+      if (ctx?.st) ctx.st.lastChoices = { ids: r.candidates.map((p) => p.id), ts: Date.now() };
       return { reply: { status: 'ambiguous', candidates: r.candidates.map(brief), message: 'Several products match. Ask which one, with a short numbered list (name and price).' } };
     }
     return { reply: { status: 'not_found', message: `No product matches "${ref}".`, some_products: all.slice(0, 5).map((p) => p.name) } };
@@ -110,7 +144,7 @@ export function createToolbox({ db, media, siteUrl, log }) {
           const all = await db.getAllProducts(biz.id);
           const f = args.filter || 'all';
           let rows = all;
-          if (f === 'low_stock') rows = all.filter((p) => (p.status === 'active' || p.status === 'out_of_stock') && p.stock_quantity <= 2);
+          if (f === 'low_stock') rows = all.filter((p) => (p.status === 'active' || p.status === 'out_of_stock') && p.stock_quantity != null && p.stock_quantity <= 2);
           else if (f !== 'all') rows = all.filter((p) => p.status === f);
           const limit = Math.min(Math.max(parseCount(args.limit) ?? 20, 1), 50);
           return { matching: rows.length, showing: Math.min(rows.length, limit), products: rows.slice(0, limit).map(brief) };
@@ -155,7 +189,7 @@ export function createToolbox({ db, media, siteUrl, log }) {
         }
 
         case 'update_product': {
-          const r = await pick(biz, args.product);
+          const r = await pick(biz, args.product, ctx);
           if (r.reply) return r.reply;
           const p = r.product;
           const price = args.price == null ? null : parseMoney(args.price);
@@ -166,16 +200,19 @@ export function createToolbox({ db, media, siteUrl, log }) {
           const newName = args.new_name ? String(args.new_name).replace(/\s+/g, ' ').trim().slice(0, 200) : null;
           const description = args.description ? clip(String(args.description), 600) : null;
           if (price == null && stock == null && !newName && !description) return { error: 'Nothing to change. Ask what to update (price, stock, name or description).' };
+          if (stock != null && mode !== 'set' && p.stock_quantity == null) {
+            return { status: 'stock_not_tracked', message: `Stock is not tracked for "${p.name}" yet, so it cannot be added to or reduced. Ask the vendor how many are in stock right now, then set that number.` };
+          }
 
           const u = await db.updateProduct(p, { price, stock, mode, name: newName, description });
           ctx.cards.push(card(u, biz, { beforePrice: p.price_kobo, beforeStock: p.stock_quantity }));
           touch(ctx, u.name);
-          const low = (u.status === 'active' || u.status === 'out_of_stock') && u.stock_quantity <= 2;
-          return { status: 'updated', product: brief(u), previous: { price: p.price_kobo / 100, stock: p.stock_quantity }, low_stock: low };
+          const low = (u.status === 'active' || u.status === 'out_of_stock') && u.stock_quantity != null && u.stock_quantity <= 2;
+          return { status: 'updated', product: brief(u), previous: { price: p.price_kobo / 100, stock: p.stock_quantity }, low_stock: low, ...(price != null && onSaleNow(p) && !onSaleNow(u) ? { sale_ended: true } : {}) };
         }
 
         case 'set_product_visibility': {
-          const r = await pick(biz, args.product);
+          const r = await pick(biz, args.product, ctx);
           if (r.reply) return r.reply;
           const p = r.product;
           const target = { publish: 'live', unpublish: 'draft', archive: 'archived' }[args.action];
@@ -202,7 +239,7 @@ export function createToolbox({ db, media, siteUrl, log }) {
 
         case 'attach_photos': {
           if (!(ctx.st.photos || []).length) return { error: 'No photos are waiting. Ask the vendor to send the photo(s) first.' };
-          const r = await pick(biz, args.product);
+          const r = await pick(biz, args.product, ctx);
           if (r.reply) return r.reply;
           const p = r.product;
           const { images, failed } = await uploadPhotos(ctx);
@@ -214,13 +251,62 @@ export function createToolbox({ db, media, siteUrl, log }) {
           return { status: 'photos_attached', product: brief(p), count: images.length, failed };
         }
 
+        case 'set_sale': {
+          if (!db.supportsSale()) return { error: 'Sales are not available on this setup. Use update_product to change the price.' };
+          const r = await pick(biz, args.product, ctx);
+          if (r.reply) return r.reply;
+          const p = r.product;
+          const base = onSaleNow(p) ? p.compare_at_price_kobo : p.price_kobo; // never stack discounts on a discount
+          let newKobo;
+          if (args.sale_price != null) {
+            const sp = parseMoney(args.sale_price);
+            if (sp == null || sp <= 0) return { error: 'The sale price is invalid. Ask the vendor for it.' };
+            newKobo = Math.round(sp * 100);
+          } else {
+            const pct = Number(args.percent_off);
+            if (!Number.isFinite(pct) || pct <= 0 || pct >= 95) return { error: 'percent_off must be between 1 and 94. Ask the vendor how much off.' };
+            newKobo = roundPrice((base / 100) * (1 - pct / 100)) * 100;
+          }
+          if (newKobo >= base) return { error: `The sale price must be lower than the normal price (${naira(base / 100)}).` };
+          await db.bulkSetPrices(biz.id, [{ id: p.id, newKobo, compareKobo: base }]);
+          const u = { ...p, price_kobo: newKobo, compare_at_price_kobo: base };
+          ctx.cards.push(card(u, biz, { beforePrice: p.price_kobo }));
+          touch(ctx, p.name);
+          return { status: 'sale_started', product: brief(u) };
+        }
+
+        case 'end_sale': {
+          if (!db.supportsSale()) return { error: 'Sales are not available on this setup.' };
+          if (args.all) {
+            const all = await db.getAllProducts(biz.id);
+            const items = all
+              .filter((p) => p.status !== 'archived' && onSaleNow(p))
+              .map((p) => ({ id: p.id, name: p.name, oldKobo: p.price_kobo, newKobo: p.compare_at_price_kobo, compareKobo: null }));
+            if (!items.length) return { status: 'not_on_sale', message: 'No product is on sale right now.' };
+            ctx.st.pending = {
+              kind: 'bulk_price', items, pct: null, turn: ctx.turn, expires: Date.now() + PENDING_TTL,
+              summary: `End the sale on ${items.length} product(s): prices go back to normal`,
+            };
+            return { status: 'needs_confirmation', summary: ctx.st.pending.summary, count: items.length, sample: items.slice(0, 5).map((i) => `${i.name}: ${naira(i.oldKobo / 100)} ➜ ${naira(i.newKobo / 100)}`), note: 'Ask the vendor to confirm.' };
+          }
+          const r = await pick(biz, args.product, ctx);
+          if (r.reply) return r.reply;
+          const p = r.product;
+          if (!onSaleNow(p)) return { status: 'not_on_sale', message: `"${p.name}" is not on sale.` };
+          await db.bulkSetPrices(biz.id, [{ id: p.id, newKobo: p.compare_at_price_kobo, compareKobo: null }]);
+          const u = { ...p, price_kobo: p.compare_at_price_kobo, compare_at_price_kobo: null };
+          ctx.cards.push(card(u, biz, { beforePrice: p.price_kobo }));
+          touch(ctx, p.name);
+          return { status: 'sale_ended', product: brief(u) };
+        }
+
         case 'delete_product': {
-          const r = await pick(biz, args.product);
+          const r = await pick(biz, args.product, ctx);
           if (r.reply) return r.reply;
           const p = r.product;
           ctx.st.pending = {
             kind: 'delete', productId: p.id, name: p.name, turn: ctx.turn, expires: Date.now() + PENDING_TTL,
-            summary: `Delete "${p.name}" (${naira(p.price_kobo / 100)}, stock ${p.stock_quantity}) permanently`,
+            summary: `Delete "${p.name}" (${naira(p.price_kobo / 100)}, stock ${fmtStock(p.stock_quantity)}) permanently`,
           };
           return { status: 'needs_confirmation', summary: ctx.st.pending.summary, note: 'Tell the vendor this cannot be undone (if the product has past orders it will be archived instead). Ask them to confirm.' };
         }
@@ -241,14 +327,20 @@ export function createToolbox({ db, media, siteUrl, log }) {
             targets = all.filter((p) => p.status !== 'archived' && (scope === 'all' || p.status === scope));
           }
           targets = [...new Map(targets.map((p) => [p.id, p])).values()];
+          const sale = db.supportsSale();
           const items = targets
-            .map((p) => ({ id: p.id, name: p.name, oldKobo: p.price_kobo, newKobo: roundPrice((p.price_kobo / 100) * (1 + pct / 100)) * 100 }))
+            .map((p) => {
+              const base = sale && onSaleNow(p) ? p.compare_at_price_kobo : p.price_kobo;
+              const item = { id: p.id, name: p.name, oldKobo: p.price_kobo, newKobo: roundPrice((base / 100) * (1 + pct / 100)) * 100 };
+              if (sale) item.compareKobo = pct < 0 ? base : null; // discount = sale (old price crossed out), increase = new normal price
+              return item;
+            })
             .filter((i) => i.newKobo !== i.oldKobo);
           if (!items.length) return { error: 'No products would change.' };
           const sample = items.slice(0, 5).map((i) => `${i.name}: ${naira(i.oldKobo / 100)} ➜ ${naira(i.newKobo / 100)}`);
           ctx.st.pending = {
             kind: 'bulk_price', items, pct, turn: ctx.turn, expires: Date.now() + PENDING_TTL,
-            summary: `Change ${items.length} product price(s) by ${pct > 0 ? '+' : ''}${pct}%`,
+            summary: pct < 0 && sale ? `Put ${items.length} product(s) on sale at ${Math.abs(pct)}% off (old prices shown crossed out)` : `Change ${items.length} product price(s) by ${pct > 0 ? '+' : ''}${pct}%`,
           };
           return { status: 'needs_confirmation', summary: ctx.st.pending.summary, count: items.length, sample, note: 'Show the vendor a couple of examples and ask them to confirm.' };
         }
@@ -266,7 +358,8 @@ export function createToolbox({ db, media, siteUrl, log }) {
           if (pd.kind === 'bulk_price') {
             await db.bulkSetPrices(biz.id, pd.items);
             const lines = pd.items.slice(0, 8).map((i) => `• ${i.name}: ${naira(i.oldKobo / 100)} ➜ ${naira(i.newKobo / 100)}`);
-            ctx.cards.push([`💰 Updated ${pd.items.length} price${pd.items.length > 1 ? 's' : ''} (${pd.pct > 0 ? '+' : ''}${pd.pct}%)`, ...lines, pd.items.length > 8 ? `…and ${pd.items.length - 8} more` : null].filter(Boolean).join('\n'));
+            const head = pd.pct == null ? `💰 Sale ended on ${pd.items.length} product${pd.items.length > 1 ? 's' : ''}` : pd.pct < 0 && db.supportsSale() ? `🏷 ${pd.items.length} product${pd.items.length > 1 ? 's' : ''} on sale (${Math.abs(pd.pct)}% off)` : `💰 Updated ${pd.items.length} price${pd.items.length > 1 ? 's' : ''} (${pd.pct > 0 ? '+' : ''}${pd.pct}%)`;
+            ctx.cards.push([head, ...lines, pd.items.length > 8 ? `…and ${pd.items.length - 8} more` : null].filter(Boolean).join('\n'));
             return { status: 'prices_updated', count: pd.items.length };
           }
           return { error: 'Unknown pending action.' };
@@ -284,11 +377,28 @@ export function createToolbox({ db, media, siteUrl, log }) {
           const active = by('active');
           return {
             total: all.length, drafts: by('draft').length, active: active.length, out_of_stock: by('out_of_stock').length, archived: by('archived').length,
-            inventory_value_naira: active.reduce((s, p) => s + (p.price_kobo / 100) * p.stock_quantity, 0),
-            low_stock: active.filter((p) => p.stock_quantity <= 2).slice(0, 10).map(brief),
+            inventory_value_naira: active.reduce((s, p) => s + (p.price_kobo / 100) * (p.stock_quantity ?? 0), 0),
+            stock_not_tracked: all.filter((p) => p.stock_quantity == null && p.status !== 'archived').length,
+            low_stock: active.filter((p) => p.stock_quantity != null && p.stock_quantity <= 2).slice(0, 10).map(brief),
             without_photo: all.filter((p) => !p.image_url && p.status !== 'archived').length,
             store_link: storeUrl(biz),
           };
+        }
+
+        case 'orders_overview': {
+          const o = await db.ordersOverview(biz.id, parseCount(args.days) ?? 7);
+          return o || { error: 'Orders are not available.' };
+        }
+
+        case 'set_daily_summary': {
+          if (!ctx.phone) return { error: 'Cannot save this setting right now.' };
+          if (args.enabled === false) {
+            await db.setDigestHour(ctx.phone, null);
+            return { status: 'summary_off' };
+          }
+          const h = Math.min(21, Math.max(5, parseCount(args.hour) ?? 8));
+          await db.setDigestHour(ctx.phone, h);
+          return { status: 'summary_on', hour_24: h, note: `Sent every morning at ${h}:00 Lagos time, and only when there is something to report.` };
         }
 
         case 'recent_orders': {

@@ -1,10 +1,41 @@
 import { extractJson, clip, sleep } from './util.js';
 
 const BASE = 'https://api.groq.com/openai/v1';
-const MODEL = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
-const FALLBACK = process.env.GROQ_FALLBACK_MODEL || 'llama-3.3-70b-versatile';
-const VISION_MODEL = process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct';
-const STT_MODEL = process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo';
+// Models in use. checkModels() swaps any model Groq has retired for the best available replacement.
+const wanted = {
+  chat: process.env.GROQ_MODEL || 'openai/gpt-oss-120b',
+  fallback: process.env.GROQ_FALLBACK_MODEL || 'llama-3.3-70b-versatile',
+  vision: process.env.GROQ_VISION_MODEL || 'meta-llama/llama-4-scout-17b-16e-instruct',
+  stt: process.env.GROQ_STT_MODEL || 'whisper-large-v3-turbo',
+};
+const models = { ...wanted };
+const PREFER = {
+  chat: ['openai/gpt-oss-120b', 'openai/gpt-oss-20b', 'llama-3.3-70b-versatile'],
+  fallback: ['llama-3.3-70b-versatile', 'openai/gpt-oss-20b', 'llama-3.1-8b-instant'],
+  vision: ['meta-llama/llama-4-scout-17b-16e-instruct', 'meta-llama/llama-4-maverick-17b-128e-instruct'],
+  stt: ['whisper-large-v3-turbo', 'whisper-large-v3'],
+};
+
+export function currentModels() { return { ...models }; }
+
+// Ask Groq which models exist and keep the bot working if one was retired (runs at start and every few hours).
+export async function checkModels(log = console) {
+  try {
+    const res = await fetch(`${BASE}/models`, { headers: auth(), signal: AbortSignal.timeout(15000) });
+    if (!res.ok) { log.warn?.(`Model check skipped (Groq ${res.status})`); return; }
+    const data = await res.json();
+    const ids = new Set((data.data || []).map((m) => m.id));
+    if (!ids.size) return;
+    for (const role of Object.keys(models)) {
+      const pick = ids.has(wanted[role]) ? wanted[role] : PREFER[role].find((m) => ids.has(m)) || wanted[role];
+      if (pick !== models[role]) log.warn?.(`AI model for ${role}: ${models[role]} -> ${pick}`);
+      models[role] = pick;
+      if (!ids.has(wanted[role]) && pick === wanted[role]) log.warn?.(`AI model "${wanted[role]}" (${role}) is not listed by Groq and no replacement was found`);
+    }
+  } catch (e) {
+    log.warn?.(`Model check failed: ${e.message}`);
+  }
+}
 const REASONING = process.env.GROQ_REASONING || 'medium';
 const MAX_STEPS = 6;
 const MAX_TOOL_CALLS = 12;
@@ -14,11 +45,11 @@ const jsonHeaders = () => ({ 'Content-Type': 'application/json', ...auth() });
 
 // ---------- chat with retry + model fallback ----------
 async function chat(body) {
-  const models = [MODEL, FALLBACK].filter((m, i, a) => m && a.indexOf(m) === i);
+  const list = [models.chat, models.fallback].filter((m, i, a) => m && a.indexOf(m) === i);
   let lastErr = new Error('No AI model available');
-  for (let mi = 0; mi < models.length; mi++) {
-    const model = models[mi];
-    const isLast = mi === models.length - 1;
+  for (let mi = 0; mi < list.length; mi++) {
+    const model = list[mi];
+    const isLast = mi === list.length - 1;
     for (let attempt = 0; attempt < 2; attempt++) {
       const payload = { ...body, model };
       if (model.includes('gpt-oss')) payload.reasoning_effort = REASONING;
@@ -53,7 +84,7 @@ async function chat(body) {
 function buildSystemPrompt(biz, stats, c) {
   const naira = (n) => `₦${Number(n).toLocaleString('en-NG')}`;
   const recent =
-    (stats.recent || []).map((p) => `- ${p.name} | ${naira(p.price_kobo / 100)} | stock ${p.stock} | ${p.status}`).join('\n') ||
+    (stats.recent || []).map((p) => `- ${p.name} | ${naira(p.price_kobo / 100)} | stock ${p.stock ?? 'not tracked'} | ${p.status}`).join('\n') ||
     '(no products yet)';
   const photoNote = c.photos?.length
     ? `PHOTOS WAITING: ${c.photos.length} photo(s) from the vendor, not yet attached to any product. Automatic analysis of the first photo (untrusted, may be wrong): ${JSON.stringify(c.photos[0].vision || 'unavailable')}. add_product attaches waiting photos automatically; attach_photos puts them on an existing product.`
@@ -71,7 +102,11 @@ HOW YOU WORK
 - Act immediately on clear requests (add, edit, publish, hide). Ask only when something essential is missing or truly ambiguous, and ask ONE short question.
 - A product name plus a price means ADD a new product (it starts as a draft; stock defaults to 1; offer to publish it, and mention the dashboard once). Use update_product for changes: "sold 2" or "reduce by 2" = stock_mode subtract; "restocked 5" or "add 3 more" = add; "make stock 5" = set; "e don finish" = set 0.
 - Prices are Naira numbers: "45k"=45000, "2.5k"=2500, "1.2m"=1200000, "45,000"=45000. If a price looks off, ask. Product names: Title Case, no price or stock words, fix obvious typos, keep brand spellings.
-- delete_product and bulk_price_change are two-step: call the tool, tell the vendor exactly what will happen and ask them to confirm. When their NEXT message agrees (yes, ok, abeg do am, ee, bẹ́ẹ̀ni, eeh, ee...) call confirm_pending_action; if they refuse call cancel_pending_action. Never confirm in the same turn you asked.
+- Discounts: "20% off Samba" or "Samba now 24k, was 30k" = set_sale (the old price shows crossed out). "10% off everything" = bulk_price_change with a negative percent. "End the sale" = end_sale. Use update_product only for a permanent price change.
+- Orders: use orders_overview for "how are sales", revenue and best sellers, and recent_orders for the latest orders. Amounts ending in _naira are Naira. You cannot change an order's status yet; tell the vendor to do that on the dashboard.
+- Morning summary: if the vendor asks for a daily summary call set_daily_summary (enabled true; hour if they name a time, 7am = 7). "Stop the summary" = enabled false.
+- A message that starts with (AUTOMATIC DAILY SUMMARY) is written by the system, not typed by the vendor. Reply with a short, warm good-morning summary in the vendor's usual language, using get_store_stats and orders_overview (days 1): drafts waiting, low stock, orders needing action. At most 6 short lines, ask nothing unless there is a clear next step like publishing drafts.
+- delete_product, bulk_price_change and end_sale (all products) are two-step: call the tool, tell the vendor exactly what will happen and ask them to confirm. When their NEXT message agrees (yes, ok, abeg do am, ee, bẹ́ẹ̀ni, eeh, ee...) call confirm_pending_action; if they refuse call cancel_pending_action. Never confirm in the same turn you asked.
 - If several products match, ask which one with a short numbered list (name and price). If the vendor then replies with a number or part of a name, use it.
 - If the tool says a product might be a duplicate, ask whether to update the existing one or add anyway (then call add_product again with allow_duplicate true).
 - If the vendor sends a photo right after talking about a product, the photo probably belongs to it: use attach_photos. If a photo has no name given, use the photo analysis to suggest a name but ask if you are unsure of the brand or model.
@@ -135,7 +170,7 @@ export async function describeImage(buffer, mime = 'image/jpeg') {
     fetch(`${BASE}/chat/completions`, {
       method: 'POST', headers: jsonHeaders(), signal: AbortSignal.timeout(30000),
       body: JSON.stringify({
-        model: VISION_MODEL, temperature: 0.1, max_completion_tokens: 400,
+        model: models.vision, temperature: 0.1, max_completion_tokens: 400,
         ...(json ? { response_format: { type: 'json_object' } } : {}),
         messages: [{ role: 'user', content: [{ type: 'text', text: VISION_PROMPT }, { type: 'image_url', image_url: { url } }] }],
       }),
@@ -164,7 +199,7 @@ export async function describeImage(buffer, mime = 'image/jpeg') {
 export async function transcribe(buffer, mime = 'audio/ogg') {
   const form = new FormData();
   form.append('file', new Blob([buffer], { type: String(mime).split(';')[0] }), 'voice.ogg');
-  form.append('model', STT_MODEL);
+  form.append('model', models.stt);
   form.append('response_format', 'json');
   form.append('temperature', '0');
   form.append('prompt', 'A Nigerian shop owner talking about products, prices in naira and stock. English, Nigerian Pidgin, Yoruba, Igbo or Hausa.');
